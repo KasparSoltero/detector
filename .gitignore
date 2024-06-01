@@ -5,3 +5,5 @@
 .txt
 .jpg
 /spectral_detector
+.DS_Store
+.vscode
