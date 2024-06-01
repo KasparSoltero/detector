@@ -1,9 +1,8 @@
 /data
-.wav
-.WAV
-.pt
-.txt
-.jpg
-/spectral_detector
+*.wav
+*.WAV
+*.pt
+*.txt
+*.jpg
 .DS_Store
 .vscode

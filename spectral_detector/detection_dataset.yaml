@@ -1,0 +1,5 @@
+path: /Users/kaspar/Documents/ecoacoustics/spectral_detector/datasets/artificial_dataset
+train: images/train
+val: images/val
+nc: 1
+names: ['positive']
