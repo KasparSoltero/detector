@@ -3,6 +3,7 @@
 *.WAV
 *.pt
 *.txt
-*.jpg
+/spectral_detector/datasets_mutable
+/spectral_detector/runs
 .DS_Store
 .vscode
