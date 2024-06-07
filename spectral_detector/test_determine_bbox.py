@@ -306,7 +306,7 @@ def load_spectrogram(path, crop_len=None, normalised=True, power_range=None):
         return spec, random_power
     return spec
 
-data_root = '/Users/kaspar/Documents/ecoacoustics/data/manually_isolated'
+data_root = 'example/manually_isolated'
 background_path = 'bg_temp'
 positive_paths = ['unknown', 'amphibian', 'reptile', 'mammal', 'insect', 'bird']
 negative_paths = ['anthrophony', 'geophony']

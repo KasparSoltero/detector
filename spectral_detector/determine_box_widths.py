@@ -6,7 +6,7 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 
-directory = '/Users/kaspar/Documents/AEDI/data/manually_isolated_all'
+directory = 'example/manually_isolated_all'
 
 def load_spectrogram(path, crop_len=None, normalised=True, power_range=None):
     waveform, sample_rate = torchaudio.load(path)

@@ -1,7 +1,7 @@
 import torch
 import torchaudio
 
-file_path = "/Users/kaspar/Documents/eco_commons/rāpaki_temp_store/rāpaki_001_0224_15_06_2023_0207_16_06_2023/20230615_023900.WAV"
+file_path = "example/rāpaki_001_0224_15_06_2023_0207_16_06_2023/20230615_023900.WAV"
 
 def rolling_avg_magnitude(file_path, window_length, frame_rate):
     """

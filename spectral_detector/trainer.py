@@ -1,20 +1,30 @@
 import torch
 from ultralytics import YOLO
+import os
 
-model = YOLO('yolov8m.pt')  # load a pretrained (on COCO) model
+data_root = 'spectral_detector'
+
+model = YOLO(os.path.join(data_root, 'yolov8m.pt'))  # load pretrained model
+
+version = 25
+
+if os.path.exists(os.path.join(data_root, f'runs/detect/train{version}')):
+    raise Exception(f'run{version} already exists. Please choose a different version number or delete run.')
 
 results = model.train(
-    data='detection_dataset.yaml', 
+    data=os.path.join(data_root, 'detection_dataset.yaml'),
+    project=os.path.join(data_root, f'runs/detect/train{version}'),
     device='mps',
     imgsz=640, #default
-    single_cls=True, #presence/absence detection
     optimizer='auto', #default. try 'Adam', 'AdamW'
     save=True, #default
     save_period=30, #epochs per save, -1 to disable.
     patience=100, #default epochs without val improvement before early stopping
-    epochs=300, 
-    close_mosaic=300, #turn off mosaic augmentation
+    epochs=100,
+    close_mosaic=100, #turn off mosaic augmentation, =epochs
     batch=32, #default 16 batch size. -1 for autobatch. maximise batch size.
+    
+    # single_cls=True, #presence/absence detection
     
     # autoaugment=0,
     translate=0,
@@ -23,7 +33,7 @@ results = model.train(
     mosaic=0,
     crop_fraction=0,
 
-    hsv_h=0.015, #default 0.015
+    hsv_h=0, #default 0.015
     hsv_s=0.1, #default 0.7
     hsv_v=0.1, #default 0.4
 
@@ -66,3 +76,29 @@ results.print()  # print results to screen
 #  21                  -1  2   4207104  ultralytics.nn.modules.block.C2f             [960, 576, 2]                 
 #  22        [15, 18, 21]  1   3776275  ultralytics.nn.modules.head.Detect           [1, [192, 384, 576]]          
 # Model summary: 295 layers, 25856899 parameters, 25856883 gradients, 79.1 GFLOPs
+
+# from  n    params  module                                       arguments                     
+#   0                  -1  1       464  ultralytics.nn.modules.conv.Conv             [3, 16, 3, 2]                 
+#   1                  -1  1      4672  ultralytics.nn.modules.conv.Conv             [16, 32, 3, 2]                
+#   2                  -1  1      7360  ultralytics.nn.modules.block.C2f             [32, 32, 1, True]             
+#   3                  -1  1     18560  ultralytics.nn.modules.conv.Conv             [32, 64, 3, 2]                
+#   4                  -1  2     49664  ultralytics.nn.modules.block.C2f             [64, 64, 2, True]             
+#   5                  -1  1     73984  ultralytics.nn.modules.conv.Conv             [64, 128, 3, 2]               
+#   6                  -1  2    197632  ultralytics.nn.modules.block.C2f             [128, 128, 2, True]           
+#   7                  -1  1    295424  ultralytics.nn.modules.conv.Conv             [128, 256, 3, 2]              
+#   8                  -1  1    460288  ultralytics.nn.modules.block.C2f             [256, 256, 1, True]           
+#   9                  -1  1    164608  ultralytics.nn.modules.block.SPPF            [256, 256, 5]                 
+#  10                  -1  1         0  torch.nn.modules.upsampling.Upsample         [None, 2, 'nearest']          
+#  11             [-1, 6]  1         0  ultralytics.nn.modules.conv.Concat           [1]                           
+#  12                  -1  1    148224  ultralytics.nn.modules.block.C2f             [384, 128, 1]                 
+#  13                  -1  1         0  torch.nn.modules.upsampling.Upsample         [None, 2, 'nearest']          
+#  14             [-1, 4]  1         0  ultralytics.nn.modules.conv.Concat           [1]                           
+#  15                  -1  1     37248  ultralytics.nn.modules.block.C2f             [192, 64, 1]                  
+#  16                  -1  1     36992  ultralytics.nn.modules.conv.Conv             [64, 64, 3, 2]                
+#  17            [-1, 12]  1         0  ultralytics.nn.modules.conv.Concat           [1]                           
+#  18                  -1  1    123648  ultralytics.nn.modules.block.C2f             [192, 128, 1]                 
+#  19                  -1  1    147712  ultralytics.nn.modules.conv.Conv             [128, 128, 3, 2]              
+#  20             [-1, 9]  1         0  ultralytics.nn.modules.conv.Concat           [1]                           
+#  21                  -1  1    493056  ultralytics.nn.modules.block.C2f             [384, 256, 1]                 
+#  22        [15, 18, 21]  1    751702  ultralytics.nn.modules.head.Detect           [2, [64, 128, 256]]           
+# Model summary: 225 layers, 3011238 parameters, 3011222 gradients, 8.2 GFLOP

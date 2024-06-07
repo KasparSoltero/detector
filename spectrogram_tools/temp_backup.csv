@@ -1,0 +1,15 @@
+citation, publication_year, empirical_dtype(s) , measure_year(s), measure_location(s), sim_year(s), sim_location(s), species, method
+lalasExpectationsPopulationGrowth2003,2003,tag,"1987,1994,1996,1998,2002","Otago (46°S, 170–171°E)",2002-2017,=,Phocarctos hookeri (sea lion),age matrix
+benningtonPuttingPreyPicture2020,,,,Doubtful Sound,,=,Tursiops truncatus (Bottlenose Dolphin),GAM
+stephensonModellingSpatialDistribution2020,,observation,1970-2017,Whole moana,,=,"cetaceans (dolphins, whales, 30 sp.)",RES/BRT
+zaniewskiPredictingSpeciesSpatial2002,,RECCE,1950-1990,Aotearoa,,=,ferns (43 sp.),GAM/ENFA
+schindlerMethodNationalMapping2021,,sat image,2016-2020,Aotearoa,,=,Nothofagaceae,RFM
+fouquetUsingEcologicalNiche2010,,observation,1923-2010,Aotearoa,,=,Leiopelma hochstetteri (frog),ENFA
+barlowSimpleModelFerret2001,,,,,,,"ferret, cat, rabbit",Predator-prey differential
+aguilarMappingStrayDomestic2015,,catch,1999-2011,Auckland,"2015,2070",Aotearoa,cat,Maxim (BIOCLIM)
+shepherdMultiscaleDynamicMaps2018,,,,,,Aotearoa,possum,IBM
+lustigPestControlRegional2019,,chew card,2016,"Te Matau a Maui (39°47.0S; 176°57.0E, Hawke's Bay)",,=,possum,IBM
+pattersonEradicatingInvasiveMammal2024,,"catch, tag",2019,"Ōtepoti (45°52′S, 170°30′E)",2019-2049,=,possum,IBM
+armstrongPopulationDynamicsReintroduced2002,,tag,"1992-1997, 1999-2004","Islands (Tiritiri Matangi, Mokoia)",,,"bird (4 sp.)",age matrix
+mckechnieSeparatingEffectsClimate2020,,catch,1979-1998,Rakiura,=,=,Ardenna grisea (tītī),age matrix
+elith*NovelMethodsImprove2006,,general,,,,general (Aotearoa incl.),general,BRT

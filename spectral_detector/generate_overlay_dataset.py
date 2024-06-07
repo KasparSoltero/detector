@@ -9,11 +9,11 @@ from PIL import Image
 from matplotlib.ticker import PercentFormatter
 
 # Paths for audio segments and noises
-audio_segment_root = '/Users/kaspar/Documents/ecoacoustics/AEDI/data/rap_001_isolated_manual'
-audio_segment_root = '/Users/kaspar/Documents/ecoacoustics/AEDI/data/manually_isolated_all'
-audio_segment_tags_path = '/Users/kaspar/Documents/ecoacoustics/AEDI/data/manually_isolated_all/tags.txt'
-background_noise_root = '/Users/kaspar/Documents/ecoacoustics/AEDI/data/noise'
-other_noise_root = '/Users/kaspar/Documents/ecoacoustics/AEDI/data/anth_and_wind'
+audio_segment_root = '_'
+audio_segment_root = '_'
+audio_segment_tags_path = '_'
+background_noise_root = 'noise'
+other_noise_root = 'anth_and_wind'
 
 # List of audio segment paths
 audio_segment_paths = [os.path.join(audio_segment_root, f) for f in os.listdir(audio_segment_root) if f.endswith('.wav') or f.endswith('.WAV')]
