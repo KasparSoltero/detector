@@ -147,10 +147,6 @@ from spectrogram_tools import spectrogram_transformed, load_spectrogram
 #                 plt.xticks(np.arange(0, spec_segment.shape[1], sample_rate), np.arange(0, spec_segment.shape[1] / sample_rate))
 #                 plt.show()
 
-# rap_001_15_06_path = '/Users/kaspar/Documents/ecoacoustics/AEDI/data/rapaki_all'
-# hinewai_path = '/Users/kaspar/Documents/ecoacoustics/AEDI/data/hinewai_2023_03_28'
-# lc_path = '/Users/kaspar/Documents/AEDI/data/landcarepossum_001_2159_07_02_2023_0335_11_02_2023'
-# lc_path_2 = '/Users/kaspar/Documents/AEDI/data/landcarepossum_001_2159_07_02_2023_0335_11_02_2023 2'
 # files are named like YYYYMMDD_HHMMSS.WAV from 20230615_022500.WAV to 20230616_020700.WAV
 def process_files(hour=None, model_no=24, plot=False):
     hinewai_path = '../data/testing'

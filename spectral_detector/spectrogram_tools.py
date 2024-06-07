@@ -51,7 +51,7 @@ def spec_to_image(spectrogram, image_normalise=0.2):
     return image
 
 def get_detections(paths, model_no):
-    model = YOLO(f'/Users/kaspar/Documents/spectral_detector/runs/detect/train{model_no}/weights/best.pt')
+    model = YOLO(f'spectral_detector/runs/detect/train{model_no}/weights/best.pt')
     all_boxes = []
     for path in paths:
         spectrograms = load_spectrogram_chunks(path)

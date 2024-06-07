@@ -465,23 +465,7 @@ def create_video_with_audio(audio_paths, output_video_path="output_video.mp4", f
         final_clip = video_clip.set_audio(audio_clip)
         final_clip.write_videofile(output_video_path, fps=frame_rate)
 
-# file_path = '/Users/kaspar/Downloads/temp-kiwi.wav'
-# file_path = '/Users/kaspar/Documents/AEDI/data/rap_001_isolated_manual/20230615_023100_01.WAV'
-# file_path = '/Users/kaspar/Documents/AEDI/data/rap_001_isolated_manual/20230615_023100_02.WAV'
-# 20230615_023100.WAV'
-
-# file_path = '/Users/kaspar/Documents/AEDI/data/manually_isolated_all/nzbol_rūrū_night_crickets_01_01.wav'
-# file_path = '/Users/kaspar/Documents/eco_commons/field_validation/001_05/20230725_051000.WAV'
-# file_path_2 = '/Users/kaspar/Documents/eco_commons/field_validation/002_05/20230725_051000.WAV'
-# file_path_3 = '/Users/kaspar/Documents/eco_commons/field_validation/003_05/20230725_051000.WAV'
-
-# file_path = "/Users/kaspar/Documents/AEDI/data/rapaki_all/20230615_025700.WAV"
-# file_path_2 = "/Users/kaspar/Documents/AEDI/data/rap_001_isolated_manual/20230615_025700_02.WAV"
-
-# file_path = '/Users/kaspar/Documents/AEDI/data/noise/20230615_150400_01.WAV'
-
-file_path = '/Users/kaspar/Documents/AEDI/data/rapaki_all/20230615_044100.WAV'
-
+file_path = "20230615_022500.WAV"
 # paths = [file_path, file_path_2]
 paths = [file_path]
 # paths = [file_path, file_path_2, file_path_3]
