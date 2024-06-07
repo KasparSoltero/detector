@@ -1,5 +1,5 @@
 # bioacoustic detector tool
-finetuned yolov8 box detector.\n
+finetuned yolov8 box detector.
 draws bounding boxes around animal sounds, distinguishes between vocalisations with constant frequency profile (crickets thrumming, continuous single bird >10 seconds, etc) and transient vocalisations.
 training dataset augmentation. datasets and yolo  models not included here.
 
