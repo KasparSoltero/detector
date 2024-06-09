@@ -45,7 +45,7 @@ def plot_metrics(train_numbers):
     plt.show()
 
 # List of training numbers to plot
-train_numbers = [20, 21, 22, 23, 24, 2401]
+train_numbers = [22,23,24,25]
 
 # Call the function to plot the metrics
 plot_metrics(train_numbers)
