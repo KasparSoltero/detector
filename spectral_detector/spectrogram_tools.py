@@ -70,36 +70,61 @@ def get_detections(paths, model_no):
         all_boxes.append(boxes)
     return all_boxes
 
-def pcen(spec, s=0.025, alpha=0.6, delta=0, r=0.2, eps=1e-6):
+def pcen(spec, s=0.025, alpha=0.01, delta=0, r=0.05, eps=1e-6):
     """
     Apply Per-Channel Energy Normalization (PCEN) to a spectrogram.
     
     Parameters:
     - spec (Tensor): Input spectrogram.
     - s (float): Time constant.
-    - alpha (float): Exponent for the smooth function.
+    - alpha (float): Exponent for the smooth function. [trained value: 0.6]
     - delta (float): Bias term.
-    - r (float): Root compression parameter.
+    - r (float): Root compression parameter. [trained value: 0.2]
     - eps (float): Small value to prevent division by zero.
     
     Returns:
     - Tensor: PCEN-processed spectrogram.
     """
-    # Handle 4D tensor by flattening out the batch and channel dimensions
-    orig_shape = spec.shape # Save original shape
-    flattened_spec = spec.view(orig_shape[0] * orig_shape[1], 1, -1) # Flatten N and C into single dimension
-
-    # Apply avg_pool1d
-    M = torch.nn.functional.avg_pool1d(flattened_spec, 
-                                        kernel_size=int(s * spec.size(-1)), 
-                                        stride=1, 
-                                        padding=int((s * spec.size(-1) - 1) // 2)).view(orig_shape)
-    pcen_spec = (spec / (M + eps).pow(alpha) + delta).pow(r) - delta**r
+    if spec.ndim == 4:
+        # Original shape for 4D tensor [batch, channels, frequencies, time]
+        orig_shape = spec.shape
+        
+        # Flatten batch and channel dimensions
+        flattened_spec = spec.view(orig_shape[0] * orig_shape[1], 1, orig_shape[2], orig_shape[3])
+        
+        # Apply avg_pool1d along the time dimension (assuming last dimension is time)
+        M = torch.nn.functional.avg_pool1d(flattened_spec.flatten(start_dim=2), 
+                                           kernel_size=int(s * spec.size(-1)), 
+                                           stride=1, 
+                                           padding=int((s * spec.size(-1) - 1) // 2)).view(orig_shape)
+        
+        pcen_spec = (spec / (M + eps).pow(alpha) + delta).pow(r) - delta**r
+    
+    elif spec.ndim == 3:
+        # Original shape for 3D tensor [batch, frequencies, time]
+        orig_shape = spec.shape
+        
+        # Unsqueeze to add a channel dimension
+        spec = spec.unsqueeze(1)
+        
+        # Apply avg_pool1d along the time dimension
+        M = torch.nn.functional.avg_pool1d(spec.flatten(start_dim=2), 
+                                           kernel_size=int(s * spec.size(-1)), 
+                                           stride=1, 
+                                           padding=int((s * spec.size(-1) - 1) // 2)).view(orig_shape[0], 1, orig_shape[1], orig_shape[2])
+        
+        # Remove the added channel dimension
+        pcen_spec = (spec / (M + eps).pow(alpha) + delta).pow(r) - delta**r
+        pcen_spec = pcen_spec.squeeze(1)  # Removing the channel dimension
+        
+    else:
+        raise ValueError(f"Input tensor must be either 3D or 4D, but got {spec.ndim}D tensor.")
+    
     return pcen_spec
 
 def spec_to_pil(spec, resize=None, iscomplex=False, normalise='power_to_PCEN', color_mode='HSV'):
     if iscomplex:
-        spec = torch.abs(torch.view_as_real(spec)).sum(-1)
+        spec = torch.abs(spec)
 
     if normalise:
         if normalise == 'power_to_dB':
@@ -110,7 +135,7 @@ def spec_to_pil(spec, resize=None, iscomplex=False, normalise='power_to_PCEN', c
             spec = pcen(spec)
         elif normalise == 'complex_to_PCEN':
             # square complex energy for magnitude power
-            spec = torch.square(torch.abs(spec))
+            spec = torch.square(spec)
             spec = pcen(spec)
 
     spec = np.squeeze(spec.numpy())
@@ -129,14 +154,14 @@ def spec_to_pil(spec, resize=None, iscomplex=False, normalise='power_to_PCEN', c
         spec = Image.fromarray(np.uint8(spec * 255), 'L')
 
     if resize:
-        spec = spec.resize(resize, Image.Resampling.LANCZOS)
+        spec = spec.resize(resize, Image.Resampling.BILINEAR)
     
     return spec
 
 def complex_spectrogram_transformed(
         spec,
-        lowpass=-1,
-        highpass=0,
+        lowpass=None,
+        highpass=None,
         scale_intensity=None,
         clamp_intensity=None,
         set_snr_db=None,
@@ -154,11 +179,13 @@ def complex_spectrogram_transformed(
     imaginary_part = spec.imag
 
     if highpass:
-        real_part[:, :highpass, :] = 0
-        imaginary_part[:, :highpass, :] = 0
+        hp = int(highpass*spec.shape[1]/24000)
+        real_part[:, :hp, :] = 0
+        imaginary_part[:, :hp, :] = 0
     if lowpass:
-        real_part[:, lowpass:, :] = 0
-        imaginary_part[:, lowpass:, :] = 0
+        lp = int(lowpass*spec.shape[1]/24000)
+        real_part[:, lp:, :] = 0
+        imaginary_part[:, lp:, :] = 0
 
     if isinstance(scale_intensity, int) or isinstance(scale_intensity, float) or (isinstance(scale_intensity, torch.Tensor) and scale_intensity.shape==[]): 
         real_part = real_part * scale_intensity
@@ -216,8 +243,8 @@ def complex_spectrogram_transformed(
 
 def spectrogram_transformed(
         spec,
-        lowpass=-1, 
-        highpass=0, 
+        lowpass=None, 
+        highpass=None, 
         scale_intensity=None, 
         clamp_intensity=None, 
         set_snr_db=None,
@@ -235,19 +262,22 @@ def spectrogram_transformed(
     if is_numpy:
         to_numpy=True
         spec = torch.from_numpy(spec)
+    if len(spec.shape) == 2:
+        spec = spec.unsqueeze(0)
     if spec.is_complex():
         spec = complex_spectrogram_transformed(
             spec,lowpass=lowpass,highpass=highpass,scale_intensity=scale_intensity,set_snr_db=set_snr_db,clamp_intensity=clamp_intensity,scale_mean=scale_mean,set_rms=set_rms,normalise=normalise,to_torch=to_torch,to_numpy=to_numpy,to_pil=to_pil,resize=resize
         )
     else:
         print(f'real spectrogram')
-        if len(spec.shape) == 2:
-            spec = spec.unsqueeze(0)
 
         if highpass:
-            spec[:, :highpass, :] = 0
+            hp = int(highpass*spec.shape[2]/24000)
+            spec[:, :hp, :] = 0
         if lowpass:
-            spec[:, lowpass:, :] = 0
+            lp = int(lowpass*spec.shape[2]/24000)
+            spec[:, lp:, :] = 0
+            print(f'lowpass {lp} set to 0')
 
         if isinstance(scale_intensity, int) or isinstance(scale_intensity, float) or (isinstance(scale_intensity, torch.Tensor) and scale_intensity.shape==[]):
             spec = spec * scale_intensity
@@ -336,7 +366,12 @@ def load_spectrogram(
     if isinstance(paths, str):
         paths = [paths]
     for path in paths:
-        waveform, sample_rate = torchaudio.load(path)
+        try:
+            waveform, sample_rate = torchaudio.load(path)
+        except:
+            print(f'couldn"t load {path}')
+            return None
+        print(f'loaded {path}, sample rate {sample_rate}')
         resample = torchaudio.transforms.Resample(sample_rate, resample_rate)
         waveform = resample(waveform)
         if waveform.shape[0]>1:

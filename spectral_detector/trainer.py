@@ -6,43 +6,60 @@ data_root = 'spectral_detector'
 
 model = YOLO(os.path.join(data_root, 'yolov8m.pt'))  # load pretrained model
 
-version = 25
+version = 2501
 
+resume = False
 if os.path.exists(os.path.join(data_root, f'runs/detect/train{version}')):
-    raise Exception(f'run{version} already exists. Please choose a different version number or delete run.')
-
-results = model.train(
-    data=os.path.join(data_root, 'detection_dataset.yaml'),
-    project=os.path.join(data_root, f'runs/detect/train{version}'),
-    device='mps',
-    imgsz=640, #default
-    optimizer='auto', #default. try 'Adam', 'AdamW'
-    save=True, #default
-    save_period=30, #epochs per save, -1 to disable.
-    patience=100, #default epochs without val improvement before early stopping
-    epochs=100,
-    close_mosaic=100, #turn off mosaic augmentation, =epochs
-    batch=32, #default 16 batch size. -1 for autobatch. maximise batch size.
-    
-    # single_cls=True, #presence/absence detection
-    
-    # autoaugment=0,
-    translate=0,
-    scale=0,
-    fliplr=0,
-    mosaic=0,
-    crop_fraction=0,
-
-    hsv_h=0, #default 0.015
-    hsv_s=0.1, #default 0.7
-    hsv_v=0.1, #default 0.4
-
-    # iou=0.20, #default 0.20, this represents the IoU threshold for evaluation
-    
-    # cls=0, #class loss weight, default 0.5
-    # resume=True # to use later with freeze
+    # raise Exception(f'run{version} already exists. Please choose a different version number or delete run.')
+    resume = True
+    print(f'run{version} already exists, starting training from last best.pt')
+    model = YOLO(os.path.join(data_root, f'runs/detect/train{version}/weights/best.pt'))  # load pretrained model
+    # version += 1
+    results = model.train(
+        # data=os.path.join(data_root, 'detection_dataset.yaml'),
+        # project=os.path.join(data_root, f'runs/detect'),
+        # name='train'+str(version),
+        resume=resume,
+        # device='mps',
+        # imgsz=640, #default
     )
-results.print()  # print results to screen
+    results.print()  # print results to screen
+
+else: 
+    results = model.train(
+        data=os.path.join(data_root, 'detection_dataset.yaml'),
+        project=os.path.join(data_root, f'runs/detect'),
+        name='train'+str(version),
+        resume=resume,
+        device='mps',
+        imgsz=640, #default
+        optimizer='auto', #default. try 'Adam', 'AdamW'
+        save=True, #default
+        save_period=30, #epochs per save, -1 to disable.
+        patience=100, #default epochs without val improvement before early stopping
+        epochs=100,
+        close_mosaic=100, #turn off mosaic augmentation, =epochs
+        batch=32, #default 16 batch size. -1 for autobatch. maximise batch size.
+        
+        # single_cls=True, #presence/absence detection
+        
+        # autoaugment=0,
+        translate=0,
+        scale=0,
+        fliplr=0,
+        mosaic=0,
+        crop_fraction=0,
+
+        hsv_h=0, #default 0.015
+        hsv_s=0.1, #default 0.7
+        hsv_v=0.1, #default 0.4
+
+        # iou=0.20, #default 0.20, this represents the IoU threshold for evaluation
+        
+        # cls=0, #class loss weight, default 0.5
+        # resume=True # to use later with freeze
+        )
+    results.print()  # print results to screen
 
 # test run
 # model = YOLO('runs/detect/train5/weights/best.pt')  

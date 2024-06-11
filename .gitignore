@@ -7,3 +7,4 @@
 /spectral_detector/runs
 .DS_Store
 .vscode
+/spectral_detector/temp_format_test_data.py
