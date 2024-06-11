@@ -4,7 +4,7 @@
 *.pt
 *.txt
 /spectral_detector/datasets_mutable
-/spectral_detector/runs
+/spectral_detector/temp_format_test_data.py
+/spectral_detector/*.pt
 .DS_Store
 .vscode
-/spectral_detector/temp_format_test_data.py
