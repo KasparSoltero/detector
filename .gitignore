@@ -1,11 +1,10 @@
 /data
 *.wav
 *.WAV
-*.pt
 *.txt
+*.pt
 /spectral_detector/datasets_mutable
 /spectral_detector/temp_format_test_data.py
-/spectral_detector/*.pt
 /train_dataset_1
 .DS_Store
 .vscode
