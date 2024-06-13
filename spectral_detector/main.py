@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
-from spectrogram_tools import load_spectrogram, spectrogram_transformed
+from spectrogram_tools import load_spectrogram, spectrogram_transformed, map_frequency_to_log_scale
 import torchaudio, torch
 
 # max_time=60*60*12
@@ -71,16 +71,19 @@ def interpret_files_in_directory(directory, model_dir='', model_no=25, plot=True
         images = []
         for i, spec in enumerate(spectrograms):
             spec = spectrogram_transformed(spec,
-                                           highpass=50,lowpass=16000)
-            images.append(spectrogram_transformed(spec, to_pil=True, normalise='power_to_PCEN', resize=(640, 640)))
+                    highpass_hz=50,
+                    lowpass_hz=16000,
+                    set_db=-10)
+            images.append(spectrogram_transformed(spec, to_pil=True, log_scale=True, normalise='power_to_PCEN', resize=(640, 640)))
             specific_boxes = []
             if annotations is not None:
                 for _, row in this_annotations.iterrows():
                     # 10 seconds 50% overlap chunks
                     if (row['start_time'] >= (i*5) and row['start_time'] < ((i+2)*5)):
                         x_start = (row['start_time'] - (i*5)) / 10
-                        y_end = 1 - (row['freq_min'] / 24000)
-                        y_start = 1 - (row['freq_max'] / 24000)
+                        y_end, y_start = map_frequency_to_log_scale(24000, [row['freq_min'], row['freq_max']])
+                        y_end = 1 - (y_end / 24000)
+                        y_start = 1 - (y_start / 24000)
                         if row['end_time'] > ((i+2)*5):
                             x_end = 1
                         else:
@@ -88,8 +91,9 @@ def interpret_files_in_directory(directory, model_dir='', model_no=25, plot=True
                         specific_boxes.append([x_start, y_start, x_end, y_end])
                     elif (row['end_time'] > (i*5) and row['end_time'] < ((i+2)*5)):
                         x_start = 0
-                        y_end = 1 - (row['freq_min'] / 24000)
-                        y_start = 1 - (row['freq_max'] / 24000)
+                        y_end, y_start = map_frequency_to_log_scale(24000, [row['freq_min'], row['freq_max']])
+                        y_end = 1 - (y_end / 24000)
+                        y_start = 1 - (y_start / 24000)
                         x_end = (row['end_time'] - (i*5)) / 10
                         specific_boxes.append([x_start, y_start, x_end, y_end])
                 gt_boxes.append(specific_boxes)

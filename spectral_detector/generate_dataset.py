@@ -9,7 +9,7 @@ from matplotlib.colors import hsv_to_rgb
 from PIL import Image
 import csv
 import chardet
-from spectrogram_tools import spectrogram_transformed, load_spectrogram
+from spectrogram_tools import spectrogram_transformed, load_spectrogram, load_waveform, transform_waveform, map_frequency_to_log_scale
 from matplotlib.ticker import PercentFormatter
 
 # Scatter plot coordinates
@@ -178,6 +178,22 @@ def load_input_dataset(data_root, background_path, positive_paths, negative_path
 
     return positive_segment_paths, positive_datatags, negative_segment_paths, negative_datatags, background_noise_paths, background_datatags
 
+def crop_overlay_waveform(
+        bg_shape,
+        segment,
+        minimum_samples_present=48000,
+    ):
+    # determine the segments start position, and crop it if it extends past the background
+    if segment.shape[1] > bg_shape:
+        minimum_start = bg_shape - segment.shape[1]
+        maximum_start = 0
+    else:
+        minimum_start = min(0, minimum_samples_present-segment.shape[1])
+        maximum_start = max(bg_shape-segment.shape[1], bg_shape-minimum_samples_present)
+    start = random.randint(minimum_start, maximum_start)
+    cropped_segment = segment[:, max(0,-start) : min(bg_shape-start, segment.shape[1])]
+    return cropped_segment, start
+
 def generate_overlays(
         get_data_paths=[None, None, None, None],
         save_directory='datasets_mutable',
@@ -224,19 +240,21 @@ def generate_overlays(
     for idx in range(n):
         label = str(idx) # image label
         # Select a random background noise (keep trying until one is long enough)
-        bg_noise_audio = None
-        while bg_noise_audio is None:
+        noise_db = random.uniform(noise_power_range[0], noise_power_range[1])
+        bg_noise_waveform_cropped = None
+        while bg_noise_waveform_cropped is None:
             bg_noise_path = random.choice(background_noise_paths)
-            bg_noise_audio = load_spectrogram(bg_noise_path, random_crop=final_length_seconds, unit_type='complex')
+            # bg_noise_audio = load_spectrogram(bg_noise_path, random_crop=final_length_seconds, unit_type='complex')
+            bg_noise_waveform, original_sample_rate = load_waveform(bg_noise_path)
+            bg_noise_waveform_cropped = transform_waveform(bg_noise_waveform, 
+                resample=[original_sample_rate,sample_rate], 
+                random_crop_seconds=final_length_seconds,
+                set_db=noise_db)
         # bg_noise_audio = spectrogram_transformed(bg_noise_audio, set_rms=1)
-        bg_noise_audio, bg_noise_power = spectrogram_transformed(
-            bg_noise_audio, 
-            set_snr_db=random.uniform(noise_power_range[0], noise_power_range[1])
-        )
         label += '_' + background_datatags[os.path.basename(bg_noise_path)[:-4]]['overlay_label']
 
-        final_freq_bins, final_time_bins = bg_noise_audio.shape[1], bg_noise_audio.shape[2]
-        one_sec_bins = int(final_time_bins/final_length_seconds) #  1 second overlap in samples
+        # final_freq_bins, final_time_bins = bg_noise_audio.shape[1], bg_noise_audio.shape[2]
+        # one_sec_bins = int(final_time_bins/final_length_seconds) #  1 second overlap in samples
         # highpass filter set by background noise tags data
         highpass_hz = background_datatags[os.path.basename(bg_noise_path)[:-4]]['highpass']
         if highpass_hz:
@@ -248,10 +266,8 @@ def generate_overlays(
         if lowpass_hz:
             lowpass_hz = int(lowpass_hz)
         else:
-            lowpass_hz = sample_rate / 2
-        lowpass_hz -= random.randint(0,1000)
-        freq_bins_cutoff_bottom = int(highpass_hz / (sample_rate / 2) * final_freq_bins)
-        freq_bins_cutoff_top = int(lowpass_hz / (sample_rate / 2) * final_freq_bins)
+            lowpass_hz = (min(original_sample_rate,sample_rate)) / 2
+        lowpass_hz -= random.randint(0,500)
 
         # adding random number of negative noises (cars, rain, wind). 
         # no boxes stored for these, as they are treated like background noise
@@ -260,48 +276,43 @@ def generate_overlays(
             negative_segment_path = random.choice(negative_segment_paths)
             label += '_'+negative_datatags[os.path.basename(os.path.dirname(negative_segment_path))][os.path.basename(negative_segment_path)[:-4]]['overlay_label']
             
-            negative_segment = load_spectrogram(negative_segment_path, unit_type='complex')
+            # negative_segment = load_spectrogram(negative_segment_path, unit_type='complex')
+            negative_waveform, neg_sr = load_waveform(negative_segment_path)
+            neg_db = random.uniform(signal_power_range[0], signal_power_range[1]) # negative overlays use the same power range as positive
+            negative_waveform = transform_waveform(negative_waveform, resample=[neg_sr,sample_rate], set_db=neg_db)
             
-            overlay = torch.zeros_like(bg_noise_audio)
-            one_sec_samp = int(bg_noise_audio.shape[2]/final_length_seconds)
+            negative_waveform_cropped, start = crop_overlay_waveform(bg_noise_waveform_cropped.shape[1], negative_waveform)
 
-            if negative_segment.shape[2] > final_time_bins:
-                minimum_start = final_time_bins - negative_segment.shape[2]
-                maximum_start = 0
-            else:
-                minimum_start = min(0, one_sec_samp-negative_segment.shape[2])
-                maximum_start = max(bg_noise_audio.shape[2]-negative_segment.shape[2], bg_noise_audio.shape[2]-one_sec_samp)
-            start = random.randint(minimum_start, maximum_start)
+            overlay = torch.zeros_like(bg_noise_waveform_cropped)
+            overlay[:,max(0,start) : max(0,start) + negative_waveform_cropped.shape[1]] = negative_waveform_cropped
+            bg_noise_waveform_cropped += overlay
 
-            negative_segment_cropped = negative_segment[:,:, max(0,-start) : min(bg_noise_audio.shape[2]-start, negative_segment.shape[2])]
+            # negative_spec_cropped = negative_segment[:,:, max(0,-start) : min(bg_noise_audio.shape[2]-start, negative_segment.shape[2])]
             
             # normalised_segment = spectrogram_transformed(negative_segment_cropped, set_rms=1)
-            normalised_segment, negative_power = spectrogram_transformed(
-                negative_segment_cropped, 
-                set_snr_db=random.uniform(signal_power_range[0], signal_power_range[1])
-            )
-            label += 'p'+str(negative_power/bg_noise_power)[:3] # power label
-            print(f'{idx}:    neg {negative_power/bg_noise_power:.2f},  ({os.path.basename(negative_segment_path)})')
+            # normalised_segment, negative_power = spectrogram_transformed(
+            #     negative_segment_cropped, 
+            #     set_snr_db=random.uniform(signal_power_range[0], signal_power_range[1])
+            # )
+            label += 'p'+str(neg_db-noise_db)[:3] # power label
             
-            overlay[:,:,max(0,start) : max(0,start) + normalised_segment.shape[2]] = normalised_segment
-            bg_noise_audio += overlay
-
         # copy
-        final_audio = bg_noise_audio.clone()
+        # final_audio = bg_noise_waveform_cropped.clone()
+        bg_spec_temp = transform_waveform(bg_noise_waveform_cropped, to_spec='power')
+        bg_time_bins, bg_freq_bins = bg_spec_temp.shape[2], bg_spec_temp.shape[1]
+        freq_bins_cutoff_bottom = int((highpass_hz / (sample_rate / 2)) * bg_freq_bins)
+        freq_bins_cutoff_top = int((lowpass_hz / (sample_rate / 2)) * bg_freq_bins)
+
         # Adding random number of positive vocalisation noises
-        # initialise boxes
-        boxes = [] # holds box cos
+        # initialise label arrays
+        boxes = []
         classes = []
         n_positive_overlays = random.randint(positive_overlay_range[0], positive_overlay_range[1])
         print(f'\n{idx}:    creating new image with {n_positive_overlays} positive overlays, bg={os.path.basename(bg_noise_path)}')
         for j in range(n_positive_overlays):
             # select positive overlay
             positive_segment_path = random.choice(positive_segment_paths)
-            
-            ## TODO fix separation
-            
-            # positive_segment, power = load_spectrogram(positive_segment_path, power_range = [1,30])
-            positive_segment = load_spectrogram(positive_segment_path, unit_type='complex')
+                    
             # check if 'species' is 'chorus'
             if positive_datatags[os.path.basename(os.path.dirname(positive_segment_path))][os.path.basename(positive_segment_path)[:-4]]['species'] == 'chorus':
                 if classes.count(1) > 0:
@@ -309,206 +320,159 @@ def generate_overlays(
                 species_class=1
             else:
                 species_class=0
+
+            # positive_segment, power = load_spectrogram(positive_segment_path, power_range = [1,30])
+            # positive_segment = load_spectrogram(positive_segment_path, unit_type='complex')
+            positive_waveform, pos_sr = load_waveform(positive_segment_path)
+            pos_db = random.uniform(signal_power_range[0], signal_power_range[1])
+            positive_waveform = transform_waveform(positive_waveform, resample=[pos_sr,sample_rate], set_db=pos_db)
+            positive_waveform_cropped, start = crop_overlay_waveform(bg_noise_waveform_cropped.shape[1], positive_waveform)
             
-            # calculate position of segment in background noise
-            seg_freq_bins, seg_time_bins = positive_segment.shape[1], positive_segment.shape[2]
+            # attempt to place segment at least 0.5 seconds from other starts #TODO dont like
+            if positive_waveform.shape[1] < bg_noise_waveform_cropped.shape[1]:
+                for i in range(20):
+                    positive_waveform_cropped, start = crop_overlay_waveform(bg_noise_waveform_cropped.shape[1], positive_waveform)
+                    if not any([start < box[0] + 0.5*sample_rate and start > box[0] - 0.5*sample_rate for box in boxes]):
+                        break
 
-            def calculate_db_power_(spec, start, end, freq_start, freq_end, threshold=0, type='mean'):
-                if type=='mean':
-                    cropped = spec[:, freq_start:freq_end, start:end]
-                    return 10 * torch.log10(cropped[cropped > threshold].mean() + 1e-6)                  
-                elif type=='max':
-                    return 10 * torch.log10(spec[:, freq_start:freq_end, start:end].max() + 1e-6)
-
-            def calculate_power(spec, start, end, freq_start, freq_end, threshold=0, type='mean'):
+            def calculate_power_old(spec, start, end, freq_start, freq_end, type='mean'):
                 # Calculate the magnitude of the complex spectrogram
                 magnitude = torch.square(torch.abs(spec))
 
+                cropped = magnitude[:, freq_start:freq_end, start:end]
                 if type == 'mean':
-                    # Crop the specified range
-                    cropped = magnitude[:, freq_start:freq_end, start:end]
-
-                    # Apply threshold and calculate the mean
-                    mean_val = cropped[cropped > threshold].mean()
-
-                    # Convert mean to decibels
-                    return mean_val
-                
+                    return cropped.mean()
                 elif type == 'max':
-                    # Crop the specified range
-                    cropped = magnitude[:, freq_start:freq_end, start:end]
-                    
-                    # Find the max value
-                    max_val = cropped.max()
-                    
-                    # Convert max to decibels
-                    return max_val
-
-            # dynamically find bounding box based on power
-            threshold = 1 # snr
-            found=0
-            if seg_time_bins < final_time_bins:
-                # attempt to place segment at least 0.5 seconds from other starts
-                minimum_start = min(0, one_sec_bins-seg_time_bins)
-                maximum_start = max(final_time_bins-seg_time_bins, final_time_bins-one_sec_bins)
-                for i in range(20):
-                    start_time = random.randint(minimum_start, maximum_start)
-                    if not any([start_time < box[0] + 0.5*one_sec_bins and start_time > box[0] - 0.5*one_sec_bins for box in boxes]):
-                        break
-                        
-                positive_segment = positive_segment[:,:, max(0,-start_time) : min(final_time_bins-start_time, seg_time_bins)]
-                normalised_segment, power = spectrogram_transformed(
-                    positive_segment, 
-                    set_snr_db=random.uniform(signal_power_range[0], signal_power_range[1]),
-                )
-                cropped_time_bins = normalised_segment.shape[2]
+                    return cropped.max()
                 
+            def calculate_power(spec, start, end, freq_start, freq_end, type='mean'):
+                # Calculate the magnitude of the power spectrogram
+                cropped = spec[:, freq_start:freq_end, start:end]
+                if type == 'mean':
+                    return cropped.mean()
+                elif type == 'max':
+                    return cropped.max()
+                
+            pos_spec_temp = transform_waveform(positive_waveform_cropped, to_spec='power')
+            # calculate position of segment in background noise
+            seg_freq_bins, seg_time_bins = pos_spec_temp.shape[1], pos_spec_temp.shape[2]
+            start_time_bins = int(start * bg_time_bins / bg_noise_waveform_cropped.shape[1])
+
+            # dynamically find the new bounding box after power shift
+            threshold = 1 # PSNR, db
+            edge_avoidance = 0.005 # 1% of final image
+            freq_edge = int(edge_avoidance*bg_freq_bins)
+            time_edge = int(edge_avoidance*bg_time_bins)
+            found=0
+            if seg_time_bins < bg_time_bins:
                 # Find frequency edges (vertical scan) - minimum start at 2 (~100 Hz @ 48khz) to avoid low frequency interferance
-                freq_start = 0
-                freq_end = seg_freq_bins - 1
-                for i in range(2, seg_freq_bins-1):
-                    noise_power_at_freq_slice = calculate_power(
-                        bg_noise_audio, 
-                        max(start_time,0), 
-                        min(start_time+cropped_time_bins,final_time_bins-1), 
-                        min(max(i,freq_bins_cutoff_bottom),freq_bins_cutoff_top), min(max(i,freq_bins_cutoff_bottom),freq_bins_cutoff_top)+1)
-                    positive_segment_at_freq_slice = calculate_power(
-                        normalised_segment, 
-                        0, cropped_time_bins, 
-                        i, i+1,
-                        type='max')
-                    if 10*torch.log10(positive_segment_at_freq_slice / noise_power_at_freq_slice) > threshold:
+                freq_start = freq_edge
+                for i in range(max(freq_edge,freq_bins_cutoff_bottom), min(seg_freq_bins-freq_edge,freq_bins_cutoff_top)-1):
+                    N = bg_spec_temp[:,
+                        i:i+1,
+                        max(start_time_bins,time_edge):min(start_time_bins+seg_time_bins,bg_time_bins-time_edge)
+                    ].mean()
+                    PS = pos_spec_temp[:,i:i+1,:].max()
+                    if (10*torch.log10(PS / N) > threshold) and (PS > threshold):
                         freq_start = i
                         found+=1
                         break
-                for i in range(seg_freq_bins - 1, 2, -1):
-                    noise_power_at_freq_slice = calculate_power(
-                        bg_noise_audio, 
-                        max(start_time,0), min(start_time+cropped_time_bins,final_time_bins-1), 
-                        min(max(i,freq_bins_cutoff_bottom),freq_bins_cutoff_top), min(max(i,freq_bins_cutoff_bottom),freq_bins_cutoff_top)+1)
-                    positive_segment_at_freq_slice = calculate_power(
-                        normalised_segment,
-                        0,cropped_time_bins, 
-                        i, i+1,
-                        type='max')
-                    if 10*torch.log10(positive_segment_at_freq_slice / noise_power_at_freq_slice) > threshold:
+                freq_end = seg_freq_bins - 1
+                for i in range(min(seg_freq_bins-freq_edge, freq_bins_cutoff_top)-1, max(freq_edge,freq_bins_cutoff_bottom), -1):
+                    N = bg_spec_temp[:,
+                        i:i+1,
+                        max(start_time_bins,time_edge):min(start_time_bins+seg_time_bins,bg_time_bins-time_edge)
+                    ].mean()
+                    PS = pos_spec_temp[:,i:i+1,:].max()
+                    if (10*torch.log10(PS / N) > threshold) and (PS > threshold):
                         freq_end = i
                         found+=1
                         break
-            
                 # Find time edges (horizontal scan)
                 start_time_offset = 0
-                end_time_offset = (cropped_time_bins - 1)
-                for i in range(cropped_time_bins-1):
-                    noise_power_at_time_slice = calculate_power(
-                        bg_noise_audio, 
-                        min(max(start_time+i,0),final_time_bins-1), min(max(start_time+i,0),final_time_bins-1)+1, 
-                        min(max(freq_start,freq_bins_cutoff_bottom),freq_bins_cutoff_top), min(max(freq_end,freq_bins_cutoff_bottom),freq_bins_cutoff_top),
-                        type='mean')
-                    positive_segment_at_time_slice = calculate_power(
-                        normalised_segment, 
-                        i,i+1, 
-                        freq_start, freq_end, type='max')
-                    if 10*torch.log10(positive_segment_at_time_slice / noise_power_at_time_slice) > threshold:
-                        start_time_offset = i
-                        found+=1
-                        break
-                for i in range((cropped_time_bins-1), 0, -1):
-                    noise_power_at_time_slice = calculate_power(
-                        bg_noise_audio, 
-                        min(max(start_time+i,0),final_time_bins-1), min(max(start_time+i,0),final_time_bins-1)+1, 
-                        min(max(freq_start,freq_bins_cutoff_bottom),freq_bins_cutoff_top), min(max(freq_end,freq_bins_cutoff_bottom),freq_bins_cutoff_top),
-                        type='mean')
-                    positive_segment_at_time_slice = calculate_power(
-                        normalised_segment, 
-                        i,i+1, 
-                        freq_start, freq_end, type='max')
-                    if 10*torch.log10(positive_segment_at_time_slice / noise_power_at_time_slice) > threshold:
-                        end_time_offset = i
-                        found+=1
-                        break
-            # noises longer than final length are treated as continuous, aren't cropped over edges
-            elif seg_time_bins >= (final_time_bins*0.95):
-                # #TODO remove
-                ok = ['r001_20230615_194000_01.WAV']
-                if (species_class==0 and not (os.path.basename(positive_segment_path) in ok)):
-                    raise ValueError(f"{idx}:{os.path.basename(positive_segment_path)} is longer than final length and not chorus, skipping")
-                
-                minimum_start = final_time_bins - seg_time_bins
-                maximum_start = 0
-                start_time = random.randint(minimum_start, maximum_start)
-                
-                positive_segment_cropped = positive_segment[:,:, max(0,-start_time) : min(final_time_bins-start_time, seg_time_bins)]
-                normalised_segment, power = spectrogram_transformed(
-                    positive_segment_cropped,
-                    set_snr_db=random.uniform(signal_power_range[0], signal_power_range[1])
-                )
-                cropped_time_bins = normalised_segment.shape[2]
-
+                if freq_start < freq_end:
+                    for i in range(0, seg_time_bins-1):
+                        N = bg_spec_temp[:,
+                            freq_start:freq_end,
+                            max(start_time_bins+i,time_edge):min(start_time_bins+i+1,bg_time_bins-time_edge)
+                        ].mean()
+                        PS = pos_spec_temp[:,freq_start:freq_end,i:i+1].max()
+                        if (10*torch.log10(PS / N) > threshold) and (PS > threshold):
+                            start_time_offset = i
+                            found+=1
+                            break
+                    end_time_offset = seg_time_bins - 1
+                    for i in range(seg_time_bins - 1, 0, -1):
+                        N = bg_spec_temp[:,
+                            freq_start:freq_end,
+                            max(start_time_bins+i,time_edge):min(start_time_bins+i+1,bg_time_bins-time_edge)
+                        ].mean()
+                        PS = pos_spec_temp[:,freq_start:freq_end,i:i+1
+                        ].max()
+                        if (10*torch.log10(PS / N) > threshold) and (PS > threshold):
+                            end_time_offset = i
+                            found+=1
+                            break
+            # noises longer than final length are treated as continuous, no need for time edges
+            elif seg_time_bins >= bg_time_bins:
                 # Find frequency edges (vertical scan) - minimum start at 2 (~100 Hz @ 48khz) to avoid low frequency interferance
-                freq_start = 0
-                freq_end = seg_freq_bins - 1
-                for i in range(2, seg_freq_bins-1):
-                    noise_power_at_freq_slice = calculate_power(
-                        bg_noise_audio, 
-                        max(start_time,0), 
-                        min(start_time+cropped_time_bins,final_time_bins-1), 
-                        min(max(i,freq_bins_cutoff_bottom),freq_bins_cutoff_top), min(max(i,freq_bins_cutoff_bottom),freq_bins_cutoff_top)+1)
-                    positive_segment_at_freq_slice = calculate_power(
-                        normalised_segment, 
-                        0,cropped_time_bins, 
-                        i, i+1, threshold=threshold,type='max')
-                    if 10*torch.log10(positive_segment_at_freq_slice / noise_power_at_freq_slice) > threshold:
+                freq_start = freq_edge
+                for i in range(max(freq_edge,freq_bins_cutoff_bottom), min(seg_freq_bins-freq_edge,freq_bins_cutoff_top)-1):
+                    N = bg_spec_temp[:,
+                        i:i+1,time_edge:bg_time_bins-time_edge
+                    ].mean()
+                    PS = pos_spec_temp[:,i:i+1,time_edge:seg_time_bins-time_edge].max()
+                    if (10*torch.log10(PS / N) > threshold) and (PS > threshold):
                         freq_start = i
                         found+=1
                         break
-                for i in range(seg_freq_bins - 1, 2, -1):
-                    noise_power_at_freq_slice = calculate_power(
-                        bg_noise_audio, 
-                        max(start_time,0),min(start_time+cropped_time_bins,final_time_bins-1), 
-                        min(max(i,freq_bins_cutoff_bottom),freq_bins_cutoff_top), min(max(i,freq_bins_cutoff_bottom),freq_bins_cutoff_top)+1)
-                    positive_segment_at_freq_slice = calculate_power(
-                        normalised_segment, 
-                        0, cropped_time_bins, 
-                        i, i+1, threshold=threshold,type='max')
-                    if 10*torch.log10(positive_segment_at_freq_slice / noise_power_at_freq_slice) > threshold:
+                freq_end = seg_freq_bins - 1
+                for i in range(min(seg_freq_bins, freq_bins_cutoff_top)-1, max(2,freq_bins_cutoff_bottom), -1):
+                    N = bg_spec_temp[:,
+                        i:i+1,time_edge:bg_time_bins-time_edge
+                    ].mean()
+                    PS = pos_spec_temp[:,i:i+1,time_edge:seg_time_bins-time_edge].max()
+                    if (10*torch.log10(PS / N) > threshold) and (PS > threshold):
                         freq_end = i
                         found+=1
                         break
+                if freq_start < freq_end:
+                    start_time_offset = 0
+                    end_time_offset = seg_time_bins - 1
+                    found+=2
 
-                start_time_offset = 0
-                end_time_offset = cropped_time_bins-1
-                found+=2
-
-            freq_start = max(min(freq_start, freq_bins_cutoff_top), freq_bins_cutoff_bottom)
-            freq_end = min(max(freq_end, freq_bins_cutoff_bottom), freq_bins_cutoff_top)
+            # freq_start = max(min(freq_start, freq_bins_cutoff_top), freq_bins_cutoff_bottom)
+            # freq_end = min(max(freq_end, freq_bins_cutoff_bottom), freq_bins_cutoff_top)
 
             # check height and width are not less than 1% of the final image
-            if ((freq_end - freq_start)/final_freq_bins) < 0.0065 or ((end_time_offset - start_time_offset)/final_time_bins) < 0.0065:
-                print(f"{idx}: Error, too small, power {power/bg_noise_power:.3f}, freq {(freq_end - freq_start)/final_freq_bins:.3f}, time {(end_time_offset - start_time_offset)/final_time_bins:.3f}")
+            if ((freq_end - freq_start)/bg_freq_bins) < 0.0065 or ((end_time_offset - start_time_offset)/bg_time_bins) < 0.0065:
+                print(f"{idx}: Error, too small, power {pos_db-noise_db:.3f}, freq {(freq_end - freq_start)/bg_freq_bins:.3f}, time {(end_time_offset - start_time_offset)/bg_time_bins:.3f}")
                 continue
-            if ((freq_end - freq_start)/final_freq_bins) > 0.99 or found < 4:
-                print(f"{idx}: Error, too faint, power {power/bg_noise_power:.3f}")
+            if ((freq_end - freq_start)/bg_freq_bins) > 0.99 or found < 4:
+                print(f"{idx}: Error, too faint, power {pos_db-noise_db:.3f}")
                 continue
 
-            print(f'power: {power:.2f}, bg_power: {bg_noise_power:.2f}')
+            # normalised_segment = spectrogram_transformed(
+            #     normalised_segment,
+            #     highpass=highpass_hz,
+            #     lowpass=lowpass_hz
+            # )
+            # # overlay the positive segment on the background noise
+            # overlay = torch.zeros_like(bg_noise_audio)
+            # overlay[:,:,max(0,start_time) : max(0,start_time) + normalised_segment.shape[2]] = normalised_segment
 
-            normalised_segment = spectrogram_transformed(
-                normalised_segment,
-                highpass=freq_bins_cutoff_bottom,
-                lowpass=freq_bins_cutoff_top
-            )
-            # overlay the positive segment on the background noise
-            overlay = torch.zeros_like(bg_noise_audio)
-            overlay[:,:,max(0,start_time) : max(0,start_time) + normalised_segment.shape[2]] = normalised_segment
+            overlay = torch.zeros_like(bg_noise_waveform_cropped)
+            overlay[:,max(0,start) : max(0,start) + positive_waveform_cropped.shape[1]] = positive_waveform_cropped
+            bg_noise_waveform_cropped += overlay
+            # final_audio += overlay
 
-            final_audio += overlay
 
-            # add bounding box to list, in units of spectrogram time and frequency bins
-            boxes.append([max(start_time_offset,start_time+start_time_offset), max(end_time_offset, start_time+end_time_offset), freq_start, freq_end])
+            # add bounding box to list, in units of spectrogram time and log frequency bins
+            freq_start, freq_end = map_frequency_to_log_scale(bg_freq_bins, [freq_start, freq_end])
+            boxes.append([max(start_time_offset,start_time_bins+start_time_offset), max(end_time_offset, start_time_bins+end_time_offset), freq_start, freq_end])
             classes.append(species_class)
             label += positive_datatags[os.path.basename(os.path.dirname(positive_segment_path))][os.path.basename(positive_segment_path)[:-4]]['overlay_label']
-            label += 'p'+str(power/bg_noise_power)[:4] # power label
+            label += 'p'+str(pos_db-noise_db)[:4] # power label
             # old_boxes.append([max(0,start), start+pos_seg_2d.shape[1]-1, 0, pos_seg_2d.shape[0]-1])
             # if separation:
             #     if repetitions:
@@ -516,22 +480,27 @@ def generate_overlays(
             #             boxes.append([start+start_offset + (i+1)*(positive_segment.shape[2] + separation), start+end_offset + (i+1)*(positive_segment.shape[2] + separation), freq_start_offset, freq_end_offset])
             #             old_boxes.append([start + (i+1)*(positive_segment.shape[2] + separation), start + (i+1)*(positive_segment.shape[2] + separation) + pos_seg_2d.shape[1]-1, 0, pos_seg_2d.shape[0]-1])
 
+        final_audio = transform_waveform(bg_noise_waveform_cropped, to_spec='power')
         final_audio = spectrogram_transformed(
             final_audio,
-            highpass=freq_bins_cutoff_bottom,
-            lowpass=freq_bins_cutoff_top)
+            highpass_hz=highpass_hz,
+            lowpass_hz=lowpass_hz
+        )
+        # final normalisation, which is applied to real audio also
+        final_audio = spectrogram_transformed(
+            final_audio,
+            set_db=-10,
+        )
 
         if(save_wav):
             wav_path = f"{save_directory}/waveform_storage_mutable/{label}"
-            spec_to_audio(final_audio, save_to=wav_path, energy_type='complex')
-        # final_audio = spectrogram_transformed(
-        #     final_audio, 
-        #     set_rms=1
-        # )
+            spec_to_audio(final_audio, save_to=wav_path, energy_type='power')
+        
         image = spectrogram_transformed(
             final_audio,
             to_pil=True,
-            normalise='complex_to_PCEN',
+            log_scale=True,
+            normalise='power_to_PCEN',
             resize=(640, 640),
         )
         if idx > val_index:
@@ -573,7 +542,7 @@ def generate_overlays(
             intersection_over_box2 = intersection_area / box2_area
             # Calculate IoU
             iou = intersection_area / float(box1_area + box2_area - intersection_area)
-            return intersection_over_box2
+            return iou
 
         def combine_boxes(box1, box2):
             x_min = min(box1[0], box2[0])
@@ -604,19 +573,15 @@ def generate_overlays(
         def merge_boxes(boxes, classes, iou_threshold=0.5):
             merged_boxes = []
             merged_classes = []
-            print(f'species: {classes}')
-            print(f'boxes: {boxes}')
             boxes_to_merge = []
             for i, (box, species_class) in enumerate(zip(boxes, classes)):
                 for k in range(len(boxes) - 1, -1, -1):
                     if k == i:
                         continue
-                    print(f'comparing box {i} to {k}. species: {species_class} vs {classes[k]}')
                     if species_class != classes[i]:
                         continue
                     other_box = boxes[k]
                     if calculate_iou(box, other_box) > iou_threshold:
-                        print('merging')
                         boxes_to_merge.append([i,k])
 
             # # Combine all boxes to merge
@@ -678,16 +643,14 @@ def generate_overlays(
         # Merge boxes based on IoU
         merged_boxes, merged_classes = merge_boxes_by_class(boxes, classes, iou_threshold=0.5)
         # make label txt file
-        print(f'{idx}:    {label},    box locations: {merged_boxes}\n')
         with open(txt_output_path, 'w') as f:
             for box, species_class in zip(merged_boxes, merged_classes):
-                x_center = (box[0] + box[1]) / 2 / final_time_bins
-                width = (box[1] - box[0]) / final_time_bins
+                x_center = (box[0] + box[1]) / 2 / bg_time_bins
+                width = (box[1] - box[0]) / bg_time_bins
 
-                # vertical flipping for yolo
-                y_center = (box[2] + box[3]) / 2 / final_freq_bins
-                y_center = 1 - y_center
-                height = (box[3] - box[2]) / final_freq_bins
+                y_center = (box[2] + box[3]) / 2 / bg_freq_bins
+                y_center = 1 - y_center # vertical flipping for yolo
+                height = (box[3] - box[2]) / bg_freq_bins
 
                 if x_center < 0 or x_center > 1 or y_center < 0 or y_center > 1 or width < 0 or width > 1 or height < 0 or height > 1:
                     print(f"{idx}: Error, box out of bounds!\n\n******\n\n******\n\n*******\n\n")
@@ -731,15 +694,20 @@ def generate_overlays(
         # plt.tight_layout()
         # plt.show()
 
+# data_root='data/manually_isolated'
+# background_path='background_noise'
+# positive_paths=['unknown', 'amphibian', 'reptile', 'mammal', 'insect', 'bird']
+# negative_paths=['anthrophony', 'geophony']
+
 # generate_overlays(
 #     get_data_paths = [data_root, background_path, positive_paths, negative_paths],
 #     save_directory = 'spectral_detector/datasets_mutable',
-#     n=3,
+#     n=12,
+#     clear_dataset=True,
 #     sample_rate=48000,
 #     final_length_seconds=10,
-#     positive_overlay_range=[7,7],
-#     negative_overlay_range=[0,0],
-#     save_wav=True, 
-#     plot=False,
-#     clear_dataset=True
+#     positive_overlay_range=[0,5],
+#     negative_overlay_range=[0,2],
+#     save_wav=False,
+#     plot=True,
 #     )

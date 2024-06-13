@@ -8,11 +8,11 @@ import torchaudio
 import torch
 import os
 import shutil
-from moviepy.editor import concatenate_videoclips, AudioFileClip, ImageClip
-from moviepy.video.io.bindings import mplfig_to_npimage
+# from moviepy.editor import concatenate_videoclips, AudioFileClip, ImageClip
+# from moviepy.video.io.bindings import mplfig_to_npimage
 import tempfile
 
-from spectral_detector.spectrogram_tools import get_detections
+from spectrogram_tools import get_detections
 
 dusk_colors = [
     (255, 255, 255),
@@ -289,7 +289,8 @@ def plot_spectrogram(paths,
                   save_to=None,
                   return_vals=False,
                   vertical_line=None,
-                  draw_boxes=False
+                  draw_boxes=False,
+                  set_width='auto',
                   ):
     if isinstance(paths, str) or not isinstance(paths, (list, tuple, np.ndarray)):
         paths = [paths]
@@ -335,7 +336,7 @@ def plot_spectrogram(paths,
     base_waveform = None
     for i, file_path in enumerate(paths):
         # Read the audio file
-        waveform, sample_rate = torchaudio.load(file_path, format='wav')
+        waveform, sample_rate = torchaudio.load(file_path)
         resample = torchaudio.transforms.Resample(sample_rate, resample_rate)
         waveform = resample(waveform)
 
@@ -359,8 +360,7 @@ def plot_spectrogram(paths,
         specs.append((spectrogram, times, frequencies))
 
     if draw_boxes:
-        boxes = get_detections(paths, model_no=20)
-
+        boxes = get_detections(paths, model_no=23)
 
         # # histogram plot
         # flat_spectrogram = spectrogram.flatten()
@@ -369,10 +369,12 @@ def plot_spectrogram(paths,
         # ax_hist.set_xlabel('Intensity (dB)')
         # ax_hist.set_ylabel('Count')
 
+
     if len(specs)==1:
         fig, ax = plt.subplots(figsize=(7.5, 4.5))
         spectrogram, times, frequencies = specs[0]
-        cax = ax.imshow(spectrogram, aspect='auto', origin='lower', extent=[times[0], times[-1], frequencies[0], frequencies[-1]], vmin=vmin, vmax=vmax, cmap=custom_color_maps[color[0]])
+        aspect = set_width if (set_width=='auto') else (((times[-1]-times[0])/(frequencies[-1]-frequencies[0]))/set_width)
+        cax = ax.imshow(spectrogram, aspect=aspect, origin='lower', extent=[times[0], times[-1], frequencies[0], frequencies[-1]], vmin=vmin, vmax=vmax, cmap=custom_color_maps[color[0]])
         if vertical_line:
             ax.axvline(vertical_line[0], color='r')
         if draw_boxes:
@@ -470,8 +472,8 @@ file_path = "20230615_022500.WAV"
 paths = [file_path]
 # paths = [file_path, file_path_2, file_path_3]
 
-output_video_path = "synced_video.mp4"
-frame_rate = 30  # FPS for video
-create_video_with_audio(paths, output_video_path, frame_rate, crop_time=[[36,45]])
+# output_video_path = "synced_video.mp4"
+# frame_rate = 30  # FPS for video
+# create_video_with_audio(paths, output_video_path, frame_rate, crop_time=[[36,45]])
 
 # plot_spectrogram(paths, color='dusk', draw_boxes=False, show=True, crop_time=[[36,45]])

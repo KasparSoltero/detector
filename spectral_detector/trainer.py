@@ -6,7 +6,7 @@ data_root = 'spectral_detector'
 
 model = YOLO(os.path.join(data_root, 'yolov8m.pt'))  # load pretrained model
 
-version = 2501
+version = 2601
 
 resume = False
 if os.path.exists(os.path.join(data_root, f'runs/detect/train{version}')):

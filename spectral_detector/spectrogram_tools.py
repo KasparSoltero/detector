@@ -5,6 +5,7 @@ from PIL import Image
 from ultralytics import YOLO
 from matplotlib.colors import hsv_to_rgb
 import random
+import os
 
 def load_spectrogram_chunks(path, chunk_length=10, overlap=0.5, resample_rate=48000):
     waveform, sample_rate = torchaudio.load(path)
@@ -122,6 +123,45 @@ def pcen(spec, s=0.025, alpha=0.01, delta=0, r=0.05, eps=1e-6):
     
     return pcen_spec
 
+def log_scale_spectrogram(spec):
+    #logarithmic scaling on the y-axis
+    # Get original dimensions
+    _, original_height, original_width = spec.shape
+    log_scale = torch.logspace(0, 1, steps=original_height, base=10.0) - 1
+    log_scale_indices = torch.clamp(log_scale * (original_height - 1) / (10 - 1), 0, original_height - 1).long()
+    log_spec = spec[:, log_scale_indices, :]# Resample spectrogram on new y-axis
+
+    return log_spec
+
+def map_frequency_to_log_scale(original_height, freq_indices):
+    # log_scale = torch.logspace(0, 1, steps=original_height, base=10.0) - 1
+    # log_scale_indices = torch.clamp(log_scale * (original_height - 1) / (10 - 1), 0, original_height - 1).long()
+    
+    # # Convert frequency indices to log scale
+    # log_freq_indices = []
+    # for freq_index in freq_indices:
+    #     # Map the linear frequency index to the closest log scale index
+    #     log_index = log_scale_indices[freq_index].item()
+    #     log_freq_indices.append(log_index)
+
+    log_scale = torch.logspace(0, 1, steps=original_height, base=10.0) - 1
+    log_scale_indices = torch.clamp(log_scale * (original_height - 1) / (10 - 1), 0, original_height - 1).long()
+
+    # Convert frequency indices to log scale
+    log_freq_indices = []
+    for freq_index in freq_indices:
+        # Find the relative position in the original linear scale
+        relative_position = freq_index / (original_height - 1 if original_height > 1 else 1)
+        
+        # Map to the log scale
+        log_position = torch.log10(torch.tensor(relative_position * (10 - 1) + 1))
+        log_index = int(torch.round(log_position * (original_height - 1) / torch.log10(torch.tensor(10.0))))
+        log_freq_indices.append(log_index)
+    
+    return log_freq_indices
+    
+    return log_freq_indices
+
 def spec_to_pil(spec, resize=None, iscomplex=False, normalise='power_to_PCEN', color_mode='HSV'):
     if iscomplex:
         spec = torch.abs(spec)
@@ -154,8 +194,43 @@ def spec_to_pil(spec, resize=None, iscomplex=False, normalise='power_to_PCEN', c
         spec = Image.fromarray(np.uint8(spec * 255), 'L')
 
     if resize:
-        spec = spec.resize(resize, Image.Resampling.BILINEAR)
+        spec = spec.resize(resize, Image.Resampling.LANCZOS)
     
+    return spec
+
+def band_pass_spec(spec, sample_rate=48000, lowpass_hz=None, highpass_hz=None):
+    if lowpass_hz:
+        lowpass = int(lowpass_hz*spec.shape[1]/(sample_rate/2))
+        spec[:, lowpass:, :] = 0
+    if highpass_hz:
+        highpass = int(highpass_hz*spec.shape[1]/(sample_rate/2))
+        spec[:, :highpass, :] = 0
+    return spec
+
+def clamp_intensity_spec(spec, clamp_intensity):
+    if isinstance(clamp_intensity, (int, float)):
+        spec = spec.clamp(min=clamp_intensity)
+    elif isinstance(clamp_intensity, (tuple, list)):
+        spec = spec.clamp(min=clamp_intensity[0], max=clamp_intensity[1])
+    return spec
+
+def scale_intensity_spec(spec, scale_intensity):
+    if isinstance(scale_intensity, (int, float)):
+        spec = spec * scale_intensity
+    elif isinstance(scale_intensity, (tuple, list)):
+        minimum = scale_intensity[0]
+        maximum = scale_intensity[1]
+        spec = (spec - spec.min()) / (spec.max() - spec.min()) * (maximum - minimum) + minimum
+    return spec
+
+def set_dB(spec, set_db, unit_type='energy'):
+    if unit_type == 'energy':
+        power = torch.mean(torch.square(spec))
+        normalise_power = torch.sqrt(10 ** (set_dB / 10) / power)
+    elif unit_type == 'power':
+        power = torch.mean(spec)
+        normalise_power = 10 ** (set_db / 10) / power
+    spec = spec * normalise_power
     return spec
 
 def complex_spectrogram_transformed(
@@ -243,17 +318,18 @@ def complex_spectrogram_transformed(
 
 def spectrogram_transformed(
         spec,
-        lowpass=None, 
-        highpass=None, 
+        lowpass_hz=None, 
+        highpass_hz=None, 
         scale_intensity=None, 
         clamp_intensity=None, 
-        set_snr_db=None,
+        set_db=None,
         scale_mean=None, 
         set_rms=None,
         normalise='power_to_PCEN', 
         to_torch=False, 
         to_numpy=False, 
         to_pil=False, 
+        log_scale=False,
         resize=None
     ):
     # [spec.shape] = [batch, freq_bins, time_bins]
@@ -262,43 +338,42 @@ def spectrogram_transformed(
     if is_numpy:
         to_numpy=True
         spec = torch.from_numpy(spec)
+
     if len(spec.shape) == 2:
         spec = spec.unsqueeze(0)
+
     if spec.is_complex():
-        spec = complex_spectrogram_transformed(
-            spec,lowpass=lowpass,highpass=highpass,scale_intensity=scale_intensity,set_snr_db=set_snr_db,clamp_intensity=clamp_intensity,scale_mean=scale_mean,set_rms=set_rms,normalise=normalise,to_torch=to_torch,to_numpy=to_numpy,to_pil=to_pil,resize=resize
-        )
+        print('complex spectrogram')
+        # spec = complex_spectrogram_transformed(
+        #     spec,lowpass=lowpass,highpass=highpass,scale_intensity=scale_intensity,set_snr_db=set_snr_db,clamp_intensity=clamp_intensity,scale_mean=scale_mean,set_rms=set_rms,normalise=normalise,to_torch=to_torch,to_numpy=to_numpy,to_pil=to_pil,resize=resize
+        # )
     else:
-        print(f'real spectrogram')
+        if highpass_hz:
+            spec = band_pass_spec(spec, highpass_hz=highpass_hz)
+        if lowpass_hz:
+            spec = band_pass_spec(spec, lowpass_hz=lowpass_hz)
+        if scale_intensity:
+            spec = scale_intensity_spec(spec, scale_intensity)
+        if clamp_intensity:
+            spec = clamp_intensity_spec(spec, clamp_intensity)
+        if set_db:
+            spec = set_dB(spec, set_db, unit_type='power')
+        if log_scale:
+            spec = log_scale_spectrogram(spec)
 
-        if highpass:
-            hp = int(highpass*spec.shape[2]/24000)
-            spec[:, :hp, :] = 0
-        if lowpass:
-            lp = int(lowpass*spec.shape[2]/24000)
-            spec[:, lp:, :] = 0
-            print(f'lowpass {lp} set to 0')
-
-        if isinstance(scale_intensity, int) or isinstance(scale_intensity, float) or (isinstance(scale_intensity, torch.Tensor) and scale_intensity.shape==[]):
-            spec = spec * scale_intensity
-        elif isinstance(scale_intensity, tuple) or isinstance(scale_intensity, list):
-            minimum = scale_intensity[0]
-            maximum = scale_intensity[1]
-            spec = (spec - spec.min()) / (spec.max() - spec.min()) * (maximum - minimum) + minimum
-        if isinstance(clamp_intensity, int) or isinstance(clamp_intensity, float):
-            spec = spec.clamp(min=clamp_intensity)
-        elif isinstance(clamp_intensity, tuple) or isinstance(clamp_intensity, list):
-            spec = spec.clamp(min=clamp_intensity[0], max=clamp_intensity[1])
         if scale_mean:
+            print('tried tp scale mean')
             # normalise mean value for the non-zero values
-            non_zero_spec = spec[spec != 0]
-            mean_power = non_zero_spec.mean()
-            normalise_power = scale_mean / mean_power
-            spec = spec * normalise_power
+            # non_zero_spec = spec[spec != 0]
+            # mean_power = non_zero_spec.mean()
+            # normalise_power = scale_mean / mean_power
+            # spec = spec * normalise_power
         if set_rms:
-            rms = torch.sqrt(torch.mean(torch.square(spec)))
-            normalise_rms_factor = set_rms / rms
-            spec = spec * normalise_rms_factor
+            print('tried to set rms')
+            # assuming unit_type=power
+            # power = torch.mean(spec)
+            # normalise_power = set_rms / power
+            # spec = spec * normalise_power
 
         if to_pil:
             # spec = np.squeeze(spec.numpy())
@@ -321,10 +396,6 @@ def spectrogram_transformed(
     
     if to_numpy:
         spec = np.squeeze(spec.numpy())
-    if scale_intensity:
-        return spec, scale_intensity
-    if set_snr_db:
-        return spec, set_snr_db
     return spec
 
 def load_spectrogram(
@@ -371,7 +442,7 @@ def load_spectrogram(
         except:
             print(f'couldn"t load {path}')
             return None
-        print(f'loaded {path}, sample rate {sample_rate}')
+        # print(f'loaded {os.path.basename(path)}, sample rate {sample_rate}')
         resample = torchaudio.transforms.Resample(sample_rate, resample_rate)
         waveform = resample(waveform)
         if waveform.shape[0]>1:
@@ -411,3 +482,65 @@ def load_spectrogram(
     if len(specs)==1:
         return specs[0]
     return specs
+
+def transform_waveform(waveform, resample=[48000,48000], random_crop_seconds=None, rms_normalised=None, set_db=None, to_spec=None):
+    if waveform.shape[0]>1:
+        waveform = torch.mean(waveform, dim=0, keepdim=True) # mono
+    
+    resample_transform = torchaudio.transforms.Resample(resample[0], resample[1])
+    waveform = resample_transform(waveform)
+    
+    if random_crop_seconds: 
+        cropped_samples = random_crop_seconds * resample[1]
+        if waveform.shape[1] > cropped_samples:
+            start = random.randint(0, waveform.shape[1] - cropped_samples)
+            waveform = waveform[:, start:start+cropped_samples]
+        else:
+            print(f"Error: shorter than random crop length {random_crop_seconds}")
+            return None
+    
+    if rms_normalised:
+        rms = torch.sqrt(torch.mean(torch.square(waveform)))
+        waveform = waveform*rms_normalised/rms
+    if set_db:
+        power = torch.mean(torch.square(waveform))
+        normalising_factor = torch.sqrt(10 ** (set_db / 10) / power)
+        waveform = waveform * normalising_factor
+    # if set_power:
+    #     power = torch.mean(torch.square(waveform))
+    #     normalising_factor = torch.sqrt(set_power / power)
+    #     waveform = waveform * normalising_factor
+
+    if to_spec:
+        if to_spec=='power':
+            spec = torchaudio.transforms.Spectrogram(
+                n_fft=2048, 
+                win_length=2048, 
+                hop_length=512, 
+                power=2.0,
+                window_fn=torch.hamming_window
+            )(waveform)
+        elif to_spec=='energy':
+            spec = torchaudio.transforms.Spectrogram(
+                n_fft=2048, 
+                win_length=2048, 
+                hop_length=512, 
+                power=None,
+                window_fn=torch.hamming_window
+            )(waveform)
+        return spec
+
+    return waveform
+
+def load_waveform(paths):
+    waveforms=[]
+    original_sample_rates=[]
+    if isinstance(paths, str):
+        paths = [paths]
+    for path in paths:
+        waveform, original_sample_rate = torchaudio.load(path)
+        waveforms.append(waveform)
+        original_sample_rates.append(original_sample_rate)
+    if len(waveforms)==1:
+        return waveforms[0], original_sample_rates[0]
+    return waveforms, original_sample_rates
