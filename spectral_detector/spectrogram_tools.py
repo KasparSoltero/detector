@@ -134,19 +134,6 @@ def log_scale_spectrogram(spec):
     return log_spec
 
 def map_frequency_to_log_scale(original_height, freq_indices):
-    # log_scale = torch.logspace(0, 1, steps=original_height, base=10.0) - 1
-    # log_scale_indices = torch.clamp(log_scale * (original_height - 1) / (10 - 1), 0, original_height - 1).long()
-    
-    # # Convert frequency indices to log scale
-    # log_freq_indices = []
-    # for freq_index in freq_indices:
-    #     # Map the linear frequency index to the closest log scale index
-    #     log_index = log_scale_indices[freq_index].item()
-    #     log_freq_indices.append(log_index)
-
-    log_scale = torch.logspace(0, 1, steps=original_height, base=10.0) - 1
-    log_scale_indices = torch.clamp(log_scale * (original_height - 1) / (10 - 1), 0, original_height - 1).long()
-
     # Convert frequency indices to log scale
     log_freq_indices = []
     for freq_index in freq_indices:
@@ -159,8 +146,20 @@ def map_frequency_to_log_scale(original_height, freq_indices):
         log_freq_indices.append(log_index)
     
     return log_freq_indices
+
+def map_frequency_to_linear_scale(original_height, freq_indices):
+    # Convert frequency indices to linear scale
+    linear_freq_indices = []
+    for freq_index in freq_indices:
+        # Find the relative position in the original log scale
+        relative_position = freq_index / (original_height - 1 if original_height > 1 else 1)
+        
+        # Map to the linear scale
+        linear_position = 10 ** (relative_position * (torch.log10(torch.tensor(10.0)) - 1) + 1)
+        linear_index = int(torch.round(linear_position * (original_height - 1)))
+        linear_freq_indices.append(linear_index)
     
-    return log_freq_indices
+    return linear_freq_indices
 
 def spec_to_pil(spec, resize=None, iscomplex=False, normalise='power_to_PCEN', color_mode='HSV'):
     if iscomplex:
@@ -189,6 +188,7 @@ def spec_to_pil(spec, resize=None, iscomplex=False, normalise='power_to_PCEN', c
         hue = np.tile(hue, (1, spec.shape[1]))
         hsv_spec = np.stack([hue, saturation, value], axis=-1)
         rgb_spec = hsv_to_rgb(hsv_spec)
+        rgb_spec = np.clip(rgb_spec, 0, 1) # should already be here but ensure nonetheless
         spec = Image.fromarray(np.uint8(rgb_spec * 255), 'RGB')
     else:
         spec = Image.fromarray(np.uint8(spec * 255), 'L')
@@ -472,7 +472,7 @@ def load_spectrogram(
                 chunk = waveform[:, i:i+samples_per_chunk]
                 spec = spec_transform(chunk)
                 specs.append(spec)
-                if len(specs)>=max:
+                if max and len(specs)>=max:
                     break
 
         else:

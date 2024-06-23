@@ -43,7 +43,9 @@ else:
         
         # single_cls=True, #presence/absence detection
         
-        # autoaugment=0,
+        autoaugment=False,
+        erasing=0,
+        
         translate=0,
         scale=0,
         fliplr=0,
