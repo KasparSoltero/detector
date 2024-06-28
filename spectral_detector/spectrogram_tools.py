@@ -86,40 +86,45 @@ def pcen(spec, s=0.025, alpha=0.01, delta=0, r=0.05, eps=1e-6):
     Returns:
     - Tensor: PCEN-processed spectrogram.
     """
-    if spec.ndim == 4:
-        # Original shape for 4D tensor [batch, channels, frequencies, time]
-        orig_shape = spec.shape
+    try:
+        if spec.ndim == 4:
+            # Original shape for 4D tensor [batch, channels, frequencies, time]
+            orig_shape = spec.shape
+            
+            # Flatten batch and channel dimensions
+            flattened_spec = spec.view(orig_shape[0] * orig_shape[1], 1, orig_shape[2], orig_shape[3])
+            
+            # Apply avg_pool1d along the time dimension (assuming last dimension is time)
+            M = torch.nn.functional.avg_pool1d(flattened_spec.flatten(start_dim=2), 
+                                            kernel_size=int(s * spec.size(-1)), 
+                                            stride=1, 
+                                            padding=int((s * spec.size(-1) - 1) // 2)).view(orig_shape)
+            
+            pcen_spec = (spec / (M + eps).pow(alpha) + delta).pow(r) - delta**r
         
-        # Flatten batch and channel dimensions
-        flattened_spec = spec.view(orig_shape[0] * orig_shape[1], 1, orig_shape[2], orig_shape[3])
-        
-        # Apply avg_pool1d along the time dimension (assuming last dimension is time)
-        M = torch.nn.functional.avg_pool1d(flattened_spec.flatten(start_dim=2), 
-                                           kernel_size=int(s * spec.size(-1)), 
-                                           stride=1, 
-                                           padding=int((s * spec.size(-1) - 1) // 2)).view(orig_shape)
-        
-        pcen_spec = (spec / (M + eps).pow(alpha) + delta).pow(r) - delta**r
-    
-    elif spec.ndim == 3:
-        # Original shape for 3D tensor [batch, frequencies, time]
-        orig_shape = spec.shape
-        
-        # Unsqueeze to add a channel dimension
-        spec = spec.unsqueeze(1)
-        
-        # Apply avg_pool1d along the time dimension
-        M = torch.nn.functional.avg_pool1d(spec.flatten(start_dim=2), 
-                                           kernel_size=int(s * spec.size(-1)), 
-                                           stride=1, 
-                                           padding=int((s * spec.size(-1) - 1) // 2)).view(orig_shape[0], 1, orig_shape[1], orig_shape[2])
-        
-        # Remove the added channel dimension
-        pcen_spec = (spec / (M + eps).pow(alpha) + delta).pow(r) - delta**r
-        pcen_spec = pcen_spec.squeeze(1)  # Removing the channel dimension
-        
-    else:
-        raise ValueError(f"Input tensor must be either 3D or 4D, but got {spec.ndim}D tensor.")
+        elif spec.ndim == 3:
+            # Original shape for 3D tensor [batch, frequencies, time]
+            orig_shape = spec.shape
+            
+            # Unsqueeze to add a channel dimension
+            spec = spec.unsqueeze(1)
+            
+            # Apply avg_pool1d along the time dimension
+            M = torch.nn.functional.avg_pool1d(spec.flatten(start_dim=2), 
+                                            kernel_size=int(s * spec.size(-1)), 
+                                            stride=1, 
+                                            padding=int((s * spec.size(-1) - 1) // 2)).view(orig_shape[0], 1, orig_shape[1], orig_shape[2])
+            
+            # Remove the added channel dimension
+            pcen_spec = (spec / (M + eps).pow(alpha) + delta).pow(r) - delta**r
+            pcen_spec = pcen_spec.squeeze(1)  # Removing the channel dimension
+            
+        else:
+            raise ValueError(f"Input tensor must be either 3D or 4D, but got {spec.ndim}D tensor.")
+    except Exception as e:
+        print(e)
+        print('pcen failed')
+        return spec
     
     return pcen_spec
 

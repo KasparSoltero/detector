@@ -539,7 +539,7 @@ def generate_overlays(
             box2_area = (box2[1] - box2[0]) * (box2[3] - box2[2])
 
             # intersection_over_smaller = intersection_area / min(box1_area, box2_area)
-            intersection_over_box2 = intersection_area / box2_area
+            # intersection_over_box2 = intersection_area / box2_area
             # Calculate IoU
             iou = intersection_area / float(box1_area + box2_area - intersection_area)
             return iou
