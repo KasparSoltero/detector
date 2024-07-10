@@ -6,7 +6,7 @@ data_root = 'spectral_detector'
 
 model = YOLO(os.path.join(data_root, 'yolov8n.pt'))  # load pretrained model
 
-version = 2603
+version = 27
 
 resume = False
 if os.path.exists(os.path.join(data_root, f'runs/detect/train{version}')):
@@ -35,7 +35,7 @@ else:
         imgsz=640, #default
         optimizer='auto', #default. try 'Adam', 'AdamW'
         save=True, #default
-        save_period=10, #epochs per save, -1 to disable.
+        save_period=5, #epochs per save, -1 to disable.
         patience=100, #default epochs without val improvement before early stopping
         epochs=100,
         close_mosaic=100, #turn off mosaic augmentation, =epochs

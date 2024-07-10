@@ -203,6 +203,26 @@ def spec_to_pil(spec, resize=None, iscomplex=False, normalise='power_to_PCEN', c
     
     return spec
 
+def spec_to_audio(spec, energy_type='power', save_to=None, normalise_rms=0.05, sample_rate=48000):
+    # convert back to waveform and save to wav for viewing testing
+    waveform_transform = torchaudio.transforms.GriffinLim(
+        n_fft=2048, 
+        win_length=2048, 
+        hop_length=512, 
+        power=2.0
+    )
+    # if energy_type=='dB':
+    #     normalise = 'dB_to_power'
+    # elif energy_type=='power':
+    #     normalise = None
+    # spec_audio = spectrogram_transformed(spec, normalise=normalise, to_torch=True)
+    # if energy_type=='complex':
+    waveform = waveform_transform(spec)
+    rms = torch.sqrt(torch.mean(torch.square(waveform)))
+    waveform = waveform*normalise_rms/rms
+    if save_to:
+        torchaudio.save(f"{save_to}.wav", waveform, sample_rate=sample_rate)
+
 def band_pass_spec(spec, sample_rate=48000, lowpass_hz=None, highpass_hz=None):
     if lowpass_hz:
         lowpass = int(lowpass_hz*spec.shape[1]/(sample_rate/2))
@@ -488,12 +508,50 @@ def load_spectrogram(
         return specs[0]
     return specs
 
-def transform_waveform(waveform, resample=[48000,48000], random_crop_seconds=None, rms_normalised=None, set_db=None, to_spec=None):
+def crop_overlay_waveform(
+        bg_shape,
+        segment,
+        minimum_samples_present=48000,
+    ):
+    # determine the segments start position, and crop it if it extends past the background
+    if segment.shape[1] > bg_shape:
+        minimum_start = bg_shape - segment.shape[1]
+        maximum_start = 0
+    else:
+        minimum_start = min(0, minimum_samples_present-segment.shape[1])
+        maximum_start = max(bg_shape-segment.shape[1], bg_shape-minimum_samples_present)
+    start = random.randint(minimum_start, maximum_start)
+    cropped_segment = segment[:, max(0,-start) : min(bg_shape-start, segment.shape[1])]
+    return cropped_segment, start
+
+def add_noise_to_waveform(waveform, noise_power, noise_type):
+    if noise_type=='white':
+        noise = torch.randn_like(waveform) * torch.sqrt(torch.tensor(noise_power))
+    elif noise_type=='brown':
+        noise = torch.cumsum(torch.randn_like(waveform), dim=-1)
+        noise = noise - noise.mean()
+        noise = noise / noise.std()
+        noise = noise * torch.sqrt(torch.tensor(noise_power))
+    elif noise_type=='pink':
+        white_noise = torch.randn_like(waveform)
+        fft = torch.fft.rfft(white_noise, dim=-1)
+        frequencies = torch.fft.rfftfreq(waveform.shape[-1], d=1.0)
+        
+        # Avoid dividing by zero frequency
+        fft[:, 1:] /= torch.sqrt(frequencies[1:])
+        
+        pink_noise = torch.fft.irfft(fft, n=waveform.shape[-1], dim=-1)
+        pink_noise = pink_noise / pink_noise.std()
+        noise = pink_noise * torch.sqrt(torch.tensor(noise_power))
+    return waveform + noise
+
+def transform_waveform(waveform, resample=[48000,48000], random_crop_seconds=None, rms_normalised=None, set_db=None, to_spec=None, add_white_noise=None, add_pink_noise=None, add_brown_noise=None):
     if waveform.shape[0]>1:
         waveform = torch.mean(waveform, dim=0, keepdim=True) # mono
     
-    resample_transform = torchaudio.transforms.Resample(resample[0], resample[1])
-    waveform = resample_transform(waveform)
+    if  not (resample[0]==resample[1]):
+        resample_transform = torchaudio.transforms.Resample(resample[0], resample[1])
+        waveform = resample_transform(waveform)
     
     if random_crop_seconds: 
         cropped_samples = random_crop_seconds * resample[1]
@@ -511,10 +569,12 @@ def transform_waveform(waveform, resample=[48000,48000], random_crop_seconds=Non
         power = torch.mean(torch.square(waveform))
         normalising_factor = torch.sqrt(10 ** (set_db / 10) / power)
         waveform = waveform * normalising_factor
-    # if set_power:
-    #     power = torch.mean(torch.square(waveform))
-    #     normalising_factor = torch.sqrt(set_power / power)
-    #     waveform = waveform * normalising_factor
+    if add_white_noise:
+        waveform = add_noise_to_waveform(waveform, add_white_noise, 'white')
+    if add_pink_noise:
+        waveform = add_noise_to_waveform(waveform, add_pink_noise, 'pink')
+    if add_brown_noise:
+        waveform = add_noise_to_waveform(waveform, add_brown_noise, 'brown')
 
     if to_spec:
         if to_spec=='power':
@@ -522,8 +582,7 @@ def transform_waveform(waveform, resample=[48000,48000], random_crop_seconds=Non
                 n_fft=2048, 
                 win_length=2048, 
                 hop_length=512, 
-                power=2.0,
-                window_fn=torch.hamming_window
+                power=2.0
             )(waveform)
         elif to_spec=='energy':
             spec = torchaudio.transforms.Spectrogram(
@@ -531,7 +590,6 @@ def transform_waveform(waveform, resample=[48000,48000], random_crop_seconds=Non
                 win_length=2048, 
                 hop_length=512, 
                 power=None,
-                window_fn=torch.hamming_window
             )(waveform)
         return spec
 

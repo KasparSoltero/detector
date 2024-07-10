@@ -1,6 +1,9 @@
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+import matplotlib.ticker as ticker
+import time
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
@@ -11,6 +14,168 @@ from intervaltree import IntervalTree
 max_time=60*60*60*2
 # max_time=60*20
 device = 'mps'
+
+def manual_verification_workflow(
+    directory='../data/testing/7050014',
+    ground_truth='../data/testing/7050014/new_annotations.csv',
+    images_per_file=None,
+    max_files=None,
+    model_no=2602,
+    conf_threshold=0.1
+):
+    model_path = f'runs/detect/train{model_no}/weights/best.pt'
+    model = YOLO(model_path)
+    all_audio_files = [file for file in os.listdir(directory) if file.endswith(('.wav', '.WAV', '.mp3', '.flac'))]
+    print(f'{len(all_audio_files)} total audio files in {directory}\n')
+
+    # Check the new_manual_annotations.txt file
+    last_annotated_file = None
+    if os.path.exists('new_manual_annotations.txt'):
+        with open('new_manual_annotations.txt', 'r') as f:
+            lines = f.readlines()
+            if lines:
+                last_annotated_file = lines[-1].split(',')[0].strip()
+
+    # Find the index of the last annotated file
+    start_index = 0
+    if last_annotated_file:
+        try:
+            start_index = all_audio_files.index(last_annotated_file)
+        except ValueError:
+            print(f"Warning: Last annotated file '{last_annotated_file}' not found in the directory. Starting from the beginning.")
+
+    # Slice the audio_files list to start from the appropriate index
+    audio_files = all_audio_files[start_index:]
+
+    if max_files and max_files < len(audio_files):
+        audio_files = audio_files[:max_files]
+        print(f'Processing {max_files} files starting from {start_index}')
+    else:
+        print(f'Processing {len(audio_files)} files starting from {start_index}')
+
+    annotations = pd.read_csv(ground_truth) if ground_truth else None
+    new_annotations = []
+
+    for idx, file_name in enumerate(audio_files):
+        print(f'\n{idx + start_index}: {file_name}')
+        file_path = os.path.join(directory, file_name)
+
+        spectrograms = load_spectrogram(file_path, max=images_per_file, chunk_length=10, overlap=0, resample_rate=48000, unit_type='power')
+        if spectrograms is None:
+            print(f'{idx}: Error - Unable to load spectrograms for {file_name}. Skipping...')
+            continue
+
+        images = []
+        gt_boxes = []
+
+        for i, spec in enumerate(spectrograms):
+            spec = spectrogram_transformed(spec, highpass_hz=50, lowpass_hz=16000)
+            spec = spectrogram_transformed(spec, set_db=-10)
+            images.append(spectrogram_transformed(spec, to_pil=True, log_scale=True, normalise='power_to_PCEN', resize=(640, 640)))
+
+            specific_boxes = []
+            if annotations is not None:
+                file_annotations = annotations[annotations['filename'] == file_name]
+                for _, row in file_annotations.iterrows():
+                    if (row['start_time'] >= (i*10) and row['start_time'] <= ((i+1)*10)) or (row['end_time'] >= (i*10) and row['end_time'] <= ((i+1)*10)):
+                        x_start = max(0, (row['start_time'] - (i*10)) / 10)
+                        x_end = min(1, (row['end_time'] - (i*10)) / 10)
+                        y_end, y_start = map_frequency_to_log_scale(24000, [row['freq_min'], row['freq_max']])
+                        y_end = 1 - (y_end / 24000)
+                        y_start = 1 - (y_start / 24000)
+                        specific_boxes.append([x_start, y_start, x_end, y_end])
+            gt_boxes.append(specific_boxes)
+
+        results = model.predict(images, 
+            device='mps',
+            save=False, 
+            show=False,
+            verbose=False,
+            conf=conf_threshold,
+            iou=0.5,
+        )
+        boxes = [result.boxes.xyxyn.cpu().numpy() for result in results]
+
+        for start_idx in range(0, len(images), 10):
+            end_idx = min(start_idx + 10, len(images))
+            current_images = images[start_idx:end_idx]
+            current_gt_boxes = gt_boxes[start_idx:end_idx]
+            current_boxes = boxes[start_idx:end_idx]
+
+            print(f'\n{idx}/{len(audio_files)}: {start_idx+1}-{end_idx} of {len(images)} images')
+
+            fig, axs = plt.subplots(2, 5, figsize=(25, 10))
+            for i, image in enumerate(current_images):
+                ax = axs[i // 5, i % 5]
+                
+                ax.imshow(np.array(image))
+                # Add time axis ticks (x-axis)
+                ax.set_xticks(np.linspace(0, 640, 6))
+                ax.set_xticklabels([f'{i:.1f}' for i in np.linspace(0, 10, 6)])
+                
+                # Add frequency axis ticks (y-axis)
+                ax.set_yticks(np.linspace(0, 640, 13))
+                ax.set_yticklabels([f'{i:.0f}' for i in np.linspace(24, 0, 13)])
+
+                ax.set_title(f'{i}: {(start_idx+i)*10}s - {(start_idx+i+1)*10}s', fontsize=8)
+
+                # Plot ground truth boxes
+                for box in current_gt_boxes[i]:
+                    x1, y1, x2, y2 = [coord * 640 for coord in box]
+                    rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, facecolor='black', edgecolor='black', linewidth=1)
+                    ax.add_patch(rect)
+
+                # Plot model prediction boxes
+                for box in current_boxes[i]:
+                    x1, y1, x2, y2 = box[:4]
+                    x1, y1, x2, y2 = [coord * 640 for coord in [x1, y1, x2, y2]]
+                    rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='white', linewidth=1, linestyle='--')
+                    ax.add_patch(rect)
+
+            # Remove any unused subplots
+            for i in range(len(current_images), 10):
+                fig.delaxes(axs.flatten()[i])
+
+            plt.tight_layout()
+            plt.draw()
+            plt.pause(0.001)  # Pause for a short time to render the plot
+            fig.canvas.start_event_loop(0.001)  # Add a tiny delay to ensure rendering
+            # time.sleep(0.01)
+            plt.close()
+
+            user_input = input(f"Enter new annotations for images {start_idx+1}-{end_idx} (format: '3 4-5 8-10, 4 6-7 12-14') or press Enter to skip: ")
+        
+            plt.close('all')  # Close all open figures
+            
+            if user_input:
+                parse_user_input(user_input, file_name, start_idx)
+
+            if end_idx == len(images):
+                break
+
+def parse_user_input(user_input, file_name, start_idx):
+    annotations = user_input.split(',')
+    for annotation in annotations:
+        parts = annotation.strip().split()
+        if len(parts) == 3:
+            image_num = int(parts[0])
+            times = parts[1].split('-')
+            freqs = parts[2].split('-')
+            if len(times) == 2 and len(freqs) == 2:
+                start_time, end_time = map(float, times)
+                start_freq, end_freq = map(float, freqs)
+                abs_start_time = (image_num + start_idx) * 10 + start_time
+                abs_end_time = (image_num + start_idx) * 10 + end_time
+                # Convert kHz to Hz
+                start_freq_hz = start_freq * 1000
+                end_freq_hz = end_freq * 1000
+                save_new_annotation(file_name, abs_start_time, abs_end_time, start_freq_hz, end_freq_hz)
+        else:
+            print(f'Invalid annotation: {annotation}')
+
+def save_new_annotation(filename, start_time, end_time, start_freq, end_freq):
+    with open('new_manual_annotations.txt', 'a') as f:
+        f.write(f"{filename}, {start_time:.2f}, {end_time:.2f}, {start_freq:.0f}, {end_freq:.0f}\n")
 
 def interpret_files_in_directory(
         directory='../data/testing/7050014', 
