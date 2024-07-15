@@ -7,6 +7,114 @@ from matplotlib.colors import hsv_to_rgb
 import random
 import os
 
+def calculate_iou_ios(box1, box2, format):
+            # Coordinates of the intersection rectangle
+            if format=='xxyy':
+                x_left = max(box1[0], box2[0])
+                y_top = max(box1[2], box2[2])
+                x_right = min(box1[1], box2[1])
+                y_bottom = min(box1[3], box2[3])
+            elif format=='xyxy':
+                print('format right')
+                x_left = min(box1[0], box2[0])
+                y_top = max(box1[1], box2[1])
+                x_right = max(box1[2], box2[2])
+                y_bottom = min(box1[3], box2[3])
+                print(f'box1: {box1}, box2: {box2}, x_left: {x_left}, y_top: {y_top}, x_right: {x_right}, y_bottom: {y_bottom}')
+
+            # Calculate intersection area
+            if x_right < x_left or y_bottom < y_top:
+                return 0.0, 0  # No intersection
+            intersection_area = (x_right - x_left) * (y_bottom - y_top)
+
+            # Area of both the bounding boxes
+            box1_area = (box1[1] - box1[0]) * (box1[3] - box1[2])
+            box2_area = (box2[1] - box2[0]) * (box2[3] - box2[2])
+
+            ios = intersection_area / min(box1_area, box2_area)
+            # Calculate IoU
+            iou = intersection_area / float(box1_area + box2_area - intersection_area)
+            print(f'intersection area: {intersection_area}, box1 area: {box1_area}, box2 area: {box2_area}, iou: {iou}, ios: {ios}')
+            return iou, ios
+
+def combine_boxes(box1, box2):
+    x_min = min(box1[0], box2[0])
+    x_max = max(box1[1], box2[1])
+    y_min = min(box1[2], box2[2])
+    y_max = max(box1[3], box2[3])
+    return [x_min, x_max, y_min, y_max]
+
+def find(parent, i):
+    if parent[i] == i:
+        return i
+    parent[i] = find(parent, parent[i])  # Path compression
+    return parent[i]
+
+def union(parent, rank, i, j):
+    root_i = find(parent, i)
+    root_j = find(parent, j)
+    
+    if root_i != root_j:
+        if rank[root_i] > rank[root_j]:
+            parent[root_j] = root_i
+        elif rank[root_i] < rank[root_j]:
+            parent[root_i] = root_j
+        else:
+            parent[root_j] = root_i
+            rank[root_i] += 1
+
+def merge_boxes_by_class(boxes, classes, iou_threshold=0.5, ios_threshold=0.5, format='xxyy'):
+    parent = list(range(len(boxes)))
+    rank = [0] * len(boxes)
+    
+    for i, (box, species_class) in enumerate(zip(boxes, classes)):
+        for k in range(len(boxes) - 1, -1, -1):
+            if k == i:
+                continue
+            if species_class != classes[k]:
+                continue
+            other_box = boxes[k]
+            iou, ios = calculate_iou_ios(box, other_box, format)
+            if iou > iou_threshold or ios > ios_threshold:
+                union(parent, rank, i, k)
+    
+    merged_boxes = {}
+    for i in range(len(boxes)):
+        root = find(parent, i)
+        if root not in merged_boxes:
+            merged_boxes[root] = boxes[i]
+        else:
+            merged_boxes[root] = combine_boxes(merged_boxes[root], boxes[i])
+    
+    # Propagate the merge to ensure indirect overlaps are included
+    updated = True
+    while updated:
+        updated = False
+        temp_merged_boxes = merged_boxes.copy()
+        for root1 in list(temp_merged_boxes.keys()):
+            for root2 in list(temp_merged_boxes.keys()):
+                if root1 == root2:
+                    continue
+                if classes[root1] != classes[root2]:  # Ensure same class
+                    continue
+                iou, ios = calculate_iou_ios(temp_merged_boxes[root1], temp_merged_boxes[root2], format)
+                if iou > iou_threshold or ios > ios_threshold:
+                    temp_merged_boxes[root1] = combine_boxes(temp_merged_boxes[root1], temp_merged_boxes[root2])
+                    del temp_merged_boxes[root2]
+                    updated = True
+                    break
+            if updated:
+                break
+        merged_boxes = temp_merged_boxes
+
+    # Extract the final merged boxes and their corresponding classes
+    final_boxes = list(merged_boxes.values())
+    final_classes = []
+    for root in merged_boxes:
+        final_classes.append(classes[root])
+    
+    return final_boxes, final_classes
+
 def load_spectrogram_chunks(path, chunk_length=10, overlap=0.5, resample_rate=48000):
     waveform, sample_rate = torchaudio.load(path)
     resample = torchaudio.transforms.Resample(sample_rate, resample_rate)
@@ -152,15 +260,28 @@ def map_frequency_to_log_scale(original_height, freq_indices):
     
     return log_freq_indices
 
+# def map_frequency_to_linear_scale(original_height, freq_indices):
+#     # Convert frequency indices to linear scale
+#     linear_freq_indices = []
+#     for freq_index in freq_indices:
+#         # Find the relative position in the original log scale
+#         relative_position = freq_index / (original_height - 1 if original_height > 1 else 1)
+        
+#         # Map to the linear scale
+#         linear_position = 10 ** (relative_position * (torch.log10(torch.tensor(10.0)) - 1) + 1)
+#         linear_index = int(torch.round(linear_position * (original_height - 1)))
+#         linear_freq_indices.append(linear_index)
+    
+#     return linear_freq_indices
 def map_frequency_to_linear_scale(original_height, freq_indices):
-    # Convert frequency indices to linear scale
+    # Convert frequency indices from log scale to linear scale
     linear_freq_indices = []
     for freq_index in freq_indices:
-        # Find the relative position in the original log scale
+        # Find the relative position in the log scale
         relative_position = freq_index / (original_height - 1 if original_height > 1 else 1)
         
-        # Map to the linear scale
-        linear_position = 10 ** (relative_position * (torch.log10(torch.tensor(10.0)) - 1) + 1)
+        # Map from log scale to linear scale
+        linear_position = (10 ** (relative_position * torch.log10(torch.tensor(10.0))) - 1) / 9
         linear_index = int(torch.round(linear_position * (original_height - 1)))
         linear_freq_indices.append(linear_index)
     
@@ -350,10 +471,10 @@ def spectrogram_transformed(
         set_db=None,
         scale_mean=None, 
         set_rms=None,
-        normalise='power_to_PCEN', 
         to_torch=False, 
         to_numpy=False, 
         to_pil=False, 
+        normalise='power_to_PCEN', #only if to pil
         log_scale=False,
         resize=None
     ):
@@ -545,7 +666,16 @@ def add_noise_to_waveform(waveform, noise_power, noise_type):
         noise = pink_noise * torch.sqrt(torch.tensor(noise_power))
     return waveform + noise
 
-def transform_waveform(waveform, resample=[48000,48000], random_crop_seconds=None, rms_normalised=None, set_db=None, to_spec=None, add_white_noise=None, add_pink_noise=None, add_brown_noise=None):
+def transform_waveform(waveform, 
+        resample=[48000,48000], 
+        random_crop_seconds=None, 
+        rms_normalised=None, 
+        set_db=None, 
+        to_spec=None, 
+        add_white_noise=None, 
+        add_pink_noise=None, 
+        add_brown_noise=None
+    ):
     if waveform.shape[0]>1:
         waveform = torch.mean(waveform, dim=0, keepdim=True) # mono
     

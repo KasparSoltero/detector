@@ -9,7 +9,8 @@ from matplotlib.colors import hsv_to_rgb
 from PIL import Image
 import csv
 import chardet
-from spectrogram_tools import spectrogram_transformed, spec_to_audio, crop_overlay_waveform, load_spectrogram, load_waveform, transform_waveform, map_frequency_to_log_scale
+from spectrogram_tools import spectrogram_transformed, spec_to_audio, crop_overlay_waveform, load_spectrogram, load_waveform, transform_waveform, map_frequency_to_log_scale, map_frequency_to_linear_scale, merge_boxes_by_class
+from display import plot_spectrogram
 from matplotlib.ticker import PercentFormatter
 
 # Scatter plot coordinates
@@ -138,10 +139,6 @@ def plot_labels(idx=[0,-1], save_directory='datasets_mutable'):
         ax.set_title(f'{image_path}')
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Frequency (Hz)')
-
-    # Add colorbar
-    # fig.colorbar(im, ax=axes.ravel().tolist(), label='Intensity (dB)', aspect=30)
-
     plt.tight_layout()
     plt.show()
     plt.close()
@@ -225,7 +222,8 @@ def generate_overlays(
         repetitions=[1,10],
         single_class=False,
         specify_positive=None,
-        specify_noise=None
+        specify_noise=None,
+        specify_bandpass=None,
     ):
     # Loop for creating and overlaying spectrograms
     # DEFAULTS: 
@@ -303,6 +301,8 @@ def generate_overlays(
         else:
             lowpass_hz = (min(original_sample_rate,sample_rate)) / 2
         lowpass_hz -= random.randint(0,500)
+        if specify_bandpass is not None:
+            highpass_hz, lowpass_hz = specify_bandpass
 
         # adding random number of negative noises (cars, rain, wind). 
         # no boxes stored for these, as they are treated like background noise
@@ -412,7 +412,6 @@ def generate_overlays(
                 # dynamically find the new bounding box after power shift
                 pos_spec_temp = transform_waveform(positive_waveform_cropped, to_spec='power')
             else:
-                print(f"{idx}: Error, no first-pass frequency found")
                 continue
 
             found=0
@@ -529,17 +528,18 @@ def generate_overlays(
 
             # potentially repeat song
             if repetitions:
-                if random.uniform(0,1)>0.1:
+                if random.uniform(0,1)>0.5:
                     seg_samples = positive_waveform_cropped.shape[1]
                     separation = random.uniform(0.5, 2) # 0.5-3 seconds
                     separation_samples = int(separation*sample_rate)
                     n_repetitions = random.randint(repetitions[0], repetitions[1])
                     new_start = start
                     for i in range(n_repetitions):
-                        new_start = new_start + seg_samples + separation_samples
-                        if new_start + seg_samples < bg_noise_waveform_cropped.shape[1]:
+                        new_start += seg_samples + separation_samples
+                        if new_start + seg_samples < (bg_noise_waveform_cropped.shape[1]-1) and (new_start>0):
                             new_start_bins = int(new_start * bg_time_bins / bg_noise_waveform_cropped.shape[1])
                             overlay = torch.zeros_like(bg_noise_waveform_cropped)
+                            # print(f'{idx}:    new start {new_start} new start bins {new_start_bins} overlay {overlay.shape} positive waveform cropped {positive_waveform_cropped.shape[1]}')
                             overlay[:,new_start : new_start + positive_waveform_cropped.shape[1]] = positive_waveform_cropped
                             bg_noise_waveform_cropped += overlay
                             boxes.append([new_start_bins+start_time_offset, new_start_bins+end_time_offset, freq_start, freq_end])
@@ -557,6 +557,7 @@ def generate_overlays(
             highpass_hz=highpass_hz,
             lowpass_hz=lowpass_hz
         )
+        
         # final normalisation, which is applied to real audio also
         final_audio = spectrogram_transformed(
             final_audio,
@@ -567,6 +568,19 @@ def generate_overlays(
             wav_path = f"{save_directory}/waveform_storage_mutable/{label}"
             spec_to_audio(final_audio, save_to=wav_path, energy_type='power')
         
+        temp_unlog_boxes = []
+        for box in boxes:
+            print(f'pre: {box[2]}, {box[3]}')
+            y1, y2 = map_frequency_to_linear_scale(bg_freq_bins, [box[2], box[3]])
+            print(f'unlogged: {y1}, {y2}')
+            temp_unlog_boxes.append([box[0], box[1], y1, y2])
+        plot_spectrogram(
+            paths=['x'],
+            not_paths_specs=[final_audio],
+            logscale=True,fontsize=16,set_width=1.5,
+            draw_boxes=[temp_unlog_boxes],
+            box_format='xxyy')
+
         image = spectrogram_transformed(
             final_audio,
             to_pil=True,
@@ -594,107 +608,24 @@ def generate_overlays(
         # except (IOError, SyntaxError) as e:
         #     print(f"Invalid image after reopening: {e}")
 
-        def calculate_iou_ios(box1, box2):
-            # Coordinates of the intersection rectangle
-            x_left = max(box1[0], box2[0])
-            y_top = max(box1[2], box2[2])
-            x_right = min(box1[1], box2[1])
-            y_bottom = min(box1[3], box2[3])
-
-            # Calculate intersection area
-            if x_right < x_left or y_bottom < y_top:
-                return 0.0, 0  # No intersection
-            intersection_area = (x_right - x_left) * (y_bottom - y_top)
-
-            # Area of both the bounding boxes
-            box1_area = (box1[1] - box1[0]) * (box1[3] - box1[2])
-            box2_area = (box2[1] - box2[0]) * (box2[3] - box2[2])
-
-            ios = intersection_area / min(box1_area, box2_area)
-            # Calculate IoU
-            iou = intersection_area / float(box1_area + box2_area - intersection_area)
-            return iou, ios
-
-        def combine_boxes(box1, box2):
-            x_min = min(box1[0], box2[0])
-            x_max = max(box1[1], box2[1])
-            y_min = min(box1[2], box2[2])
-            y_max = max(box1[3], box2[3])
-            return [x_min, x_max, y_min, y_max]
-
-        def find(parent, i):
-            if parent[i] == i:
-                return i
-            parent[i] = find(parent, parent[i])  # Path compression
-            return parent[i]
-
-        def union(parent, rank, i, j):
-            root_i = find(parent, i)
-            root_j = find(parent, j)
-            
-            if root_i != root_j:
-                if rank[root_i] > rank[root_j]:
-                    parent[root_j] = root_i
-                elif rank[root_i] < rank[root_j]:
-                    parent[root_i] = root_j
-                else:
-                    parent[root_j] = root_i
-                    rank[root_i] += 1
-
-        def merge_boxes_by_class(boxes, classes, iou_threshold=0.5, ios_threshold=0.5):
-            parent = list(range(len(boxes)))
-            rank = [0] * len(boxes)
-            
-            for i, (box, species_class) in enumerate(zip(boxes, classes)):
-                for k in range(len(boxes) - 1, -1, -1):
-                    if k == i:
-                        continue
-                    if species_class != classes[k]:
-                        continue
-                    other_box = boxes[k]
-                    iou, ios = calculate_iou_ios(box, other_box)
-                    if iou > iou_threshold or ios > ios_threshold:
-                        union(parent, rank, i, k)
-            
-            merged_boxes = {}
-            for i in range(len(boxes)):
-                root = find(parent, i)
-                if root not in merged_boxes:
-                    merged_boxes[root] = boxes[i]
-                else:
-                    merged_boxes[root] = combine_boxes(merged_boxes[root], boxes[i])
-            
-            # Propagate the merge to ensure indirect overlaps are included
-            updated = True
-            while updated:
-                updated = False
-                temp_merged_boxes = merged_boxes.copy()
-                for root1 in list(temp_merged_boxes.keys()):
-                    for root2 in list(temp_merged_boxes.keys()):
-                        if root1 == root2:
-                            continue
-                        if classes[root1] != classes[root2]:  # Ensure same class
-                            continue
-                        iou, ios = calculate_iou_ios(temp_merged_boxes[root1], temp_merged_boxes[root2])
-                        if iou > iou_threshold or ios > ios_threshold:
-                            temp_merged_boxes[root1] = combine_boxes(temp_merged_boxes[root1], temp_merged_boxes[root2])
-                            del temp_merged_boxes[root2]
-                            updated = True
-                            break
-                    if updated:
-                        break
-                merged_boxes = temp_merged_boxes
-
-            # Extract the final merged boxes and their corresponding classes
-            final_boxes = list(merged_boxes.values())
-            final_classes = []
-            for root in merged_boxes:
-                final_classes.append(classes[root])
-            
-            return final_boxes, final_classes
+        
 
         # Merge boxes based on IoU
         merged_boxes, merged_classes = merge_boxes_by_class(boxes, classes, iou_threshold=0.1, ios_threshold=0.4)
+        
+        temp_unlog_boxes = []
+        for box in merged_boxes:
+            print(f'pre: {box[2]}, {box[3]}')
+            y1, y2 = map_frequency_to_linear_scale(bg_freq_bins, [box[2], box[3]])
+            print(f'unlogged: {y1}, {y2}')
+            temp_unlog_boxes.append([box[0], box[1], y1, y2])
+        plot_spectrogram(
+            paths=['x'],
+            not_paths_specs=[final_audio],
+            logscale=True,fontsize=16,set_width=1.5,
+            draw_boxes=[temp_unlog_boxes],
+            box_format='xxyy')
+        
         # make label txt file
         with open(txt_output_path, 'w') as f:
             for box, species_class in zip(merged_boxes, merged_classes):

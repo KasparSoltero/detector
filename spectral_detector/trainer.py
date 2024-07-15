@@ -41,7 +41,7 @@ else:
         close_mosaic=100, #turn off mosaic augmentation, =epochs
         batch=32, #default 16 batch size. -1 for autobatch. maximise batch size.
         
-        # single_cls=True, #presence/absence detection
+        single_cls=True, #presence/absence detection
         
         # autoaugment=False,
         erasing=0,

@@ -1,5 +1,5 @@
 path: spectral_detector/datasets_mutable/artificial_dataset/
 train: images/train
 val: images/val
-nc: 2
-names: ['vocalisation','chorus']
+nc: 1
+names: ['vocalisation']
