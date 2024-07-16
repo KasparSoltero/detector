@@ -9,7 +9,7 @@ from matplotlib.colors import hsv_to_rgb
 from PIL import Image
 import csv
 import chardet
-from spectrogram_tools import spectrogram_transformed, spec_to_audio, crop_overlay_waveform, load_spectrogram, load_waveform, transform_waveform, map_frequency_to_log_scale, map_frequency_to_linear_scale, merge_boxes_by_class
+from spectrogram_tools import spectrogram_transformed, spec_to_audio, crop_overlay_waveform, load_spectrogram, load_waveform, transform_waveform, map_frequency_to_log_scale, map_frequency_to_linear_scale, merge_boxes_by_class, pcen
 from display import plot_spectrogram
 from matplotlib.ticker import PercentFormatter
 
@@ -271,18 +271,21 @@ def generate_overlays(
                 resample=[original_sample_rate,sample_rate], 
                 random_crop_seconds=final_length_seconds
             )
-        if random.uniform(0,1)>0.5: # 50% chance add white noise 0.005 - 0.01 rms
-            bg_noise_waveform_cropped = transform_waveform(bg_noise_waveform_cropped,
-                add_white_noise=random.uniform(0.005, 0.03)
-            )
-        if random.uniform(0,1)>0.5: # 50% chance add pink noise 0.005 - 0.01 rms
-            bg_noise_waveform_cropped = transform_waveform(bg_noise_waveform_cropped,
-                add_pink_noise=random.uniform(0.005, 0.03)
-            )
-        if random.uniform(0,1)>0.5: # 50% chance add brown noise 0.005 - 0.01 rms
-            bg_noise_waveform_cropped = transform_waveform(bg_noise_waveform_cropped,
-                add_brown_noise=random.uniform(0.005, 0.03)
-            )
+        # if random.uniform(0,1)>0.5: # 50% chance add white noise 0.005 - 0.01 rms
+        #     bg_noise_waveform_cropped = transform_waveform(bg_noise_waveform_cropped,
+        #         add_white_noise=random.uniform(0.005, 0.03)
+        #     )
+        # if random.uniform(0,1)>0.5: # 50% chance add pink noise 0.005 - 0.01 rms
+        #     bg_noise_waveform_cropped = transform_waveform(bg_noise_waveform_cropped,
+        #         add_pink_noise=random.uniform(0.005, 0.03)
+        #     )
+        # if random.uniform(0,1)>0.5: # 50% chance add brown noise 0.005 - 0.01 rms
+        #     bg_noise_waveform_cropped = transform_waveform(bg_noise_waveform_cropped,
+        #         add_brown_noise=random.uniform(0.005, 0.03)
+        #     )
+        bg_noise_waveform_cropped = transform_waveform(bg_noise_waveform_cropped,
+            add_pink_noise=0.005
+        )
         # set db
         bg_noise_waveform_cropped = transform_waveform(bg_noise_waveform_cropped, set_db=noise_db)
 
@@ -324,6 +327,7 @@ def generate_overlays(
 
             label += 'p' + f"{(10 ** ((neg_db - noise_db) / 10)).item():.3f}" # power label
             
+        new_waveform = bg_noise_waveform_cropped.clone()
         bg_spec_temp = transform_waveform(bg_noise_waveform_cropped, to_spec='power')
         bg_time_bins, bg_freq_bins = bg_spec_temp.shape[2], bg_spec_temp.shape[1]
         freq_bins_cutoff_bottom = int((highpass_hz / (sample_rate / 2)) * bg_freq_bins)
@@ -335,7 +339,14 @@ def generate_overlays(
         classes = []
         n_positive_overlays = random.randint(positive_overlay_range[0], positive_overlay_range[1])
         print(f'\n{idx}:    creating new image with {n_positive_overlays} positive overlays, bg={os.path.basename(bg_noise_path)}')
-        for j in range(n_positive_overlays):
+        succuessful_positive_overlays = 0
+        while_catch = 0
+        while succuessful_positive_overlays < n_positive_overlays:
+            while_catch += 1
+            if while_catch > 100:
+                print(f"{idx}: Error, too many iterations")
+                break
+
             # select positive overlay
             if specify_positive is not None:
                 positive_segment_path = specify_positive
@@ -512,9 +523,29 @@ def generate_overlays(
                 print(f"{idx}: Error, too faint, power {pos_db-noise_db:.3f}")
                 continue
 
+            combined_for_plot = bg_noise_waveform_cropped.clone()
+            combined_for_plot[:,max(0,start) : max(0,start) + positive_waveform_cropped.shape[1]] += positive_waveform_cropped
+            temp_comobined_spec = transform_waveform(combined_for_plot, to_spec='power')
+            plot_spectrogram(paths=['x'], not_paths_specs=[temp_comobined_spec],
+                logscale=False, 
+                draw_boxes=[[
+                    [10, seg_time_bins+10, first_pass_freq_start, first_pass_freq_end],
+                    [start_time_offset+10, end_time_offset+10, freq_start, freq_end]
+                    ]],
+                box_format='xxyy',
+                set_width=1,fontsize=15,
+                box_colors=['#ff7700','#45ff45'],
+                box_styles=['solid','--'],
+                box_widths=[2,2],
+                crop_time=[max(0,start_time_bins-10), min(start_time_bins+seg_time_bins+10,bg_time_bins)],
+                crop_frequency=[max(first_pass_freq_start-10,0), min(first_pass_freq_end+10,bg_freq_bins)],
+                specify_freq_range=[((first_pass_freq_start-10)/bg_freq_bins)*24000, ((first_pass_freq_end+10)/bg_freq_bins)*24000]
+            )
+
             overlay = torch.zeros_like(bg_noise_waveform_cropped)
             overlay[:,max(0,start) : max(0,start) + positive_waveform_cropped.shape[1]] = positive_waveform_cropped
-            bg_noise_waveform_cropped += overlay
+            new_waveform += overlay
+            succuessful_positive_overlays += 1
 
             freq_start, freq_end = map_frequency_to_log_scale(bg_freq_bins, [freq_start, freq_end])
             # add bounding box to list, in units of spectrogram time and log frequency bins
@@ -539,9 +570,10 @@ def generate_overlays(
                         if new_start + seg_samples < (bg_noise_waveform_cropped.shape[1]-1) and (new_start>0):
                             new_start_bins = int(new_start * bg_time_bins / bg_noise_waveform_cropped.shape[1])
                             overlay = torch.zeros_like(bg_noise_waveform_cropped)
-                            # print(f'{idx}:    new start {new_start} new start bins {new_start_bins} overlay {overlay.shape} positive waveform cropped {positive_waveform_cropped.shape[1]}')
                             overlay[:,new_start : new_start + positive_waveform_cropped.shape[1]] = positive_waveform_cropped
-                            bg_noise_waveform_cropped += overlay
+                            new_waveform += overlay
+                            succuessful_positive_overlays += 1
+
                             boxes.append([new_start_bins+start_time_offset, new_start_bins+end_time_offset, freq_start, freq_end])
                             if single_class:
                                 classes.append(0)
@@ -550,8 +582,8 @@ def generate_overlays(
                             label += 'x' # repetition
                         else:
                             break
-        
-        final_audio = transform_waveform(bg_noise_waveform_cropped, to_spec='power')
+            
+        final_audio = transform_waveform(new_waveform, to_spec='power')
         final_audio = spectrogram_transformed(
             final_audio,
             highpass_hz=highpass_hz,
@@ -570,17 +602,17 @@ def generate_overlays(
         
         temp_unlog_boxes = []
         for box in boxes:
-            print(f'pre: {box[2]}, {box[3]}')
             y1, y2 = map_frequency_to_linear_scale(bg_freq_bins, [box[2], box[3]])
-            print(f'unlogged: {y1}, {y2}')
             temp_unlog_boxes.append([box[0], box[1], y1, y2])
         plot_spectrogram(
             paths=['x'],
             not_paths_specs=[final_audio],
             logscale=True,fontsize=16,set_width=1.5,
             draw_boxes=[temp_unlog_boxes],
+            box_colors=['#45ff45']*len(boxes),
+            box_widths=[2]*len(boxes),
             box_format='xxyy')
-
+        
         image = spectrogram_transformed(
             final_audio,
             to_pil=True,
@@ -615,15 +647,16 @@ def generate_overlays(
         
         temp_unlog_boxes = []
         for box in merged_boxes:
-            print(f'pre: {box[2]}, {box[3]}')
             y1, y2 = map_frequency_to_linear_scale(bg_freq_bins, [box[2], box[3]])
-            print(f'unlogged: {y1}, {y2}')
             temp_unlog_boxes.append([box[0], box[1], y1, y2])
+        temp_pcen_spec = pcen(final_audio)
         plot_spectrogram(
             paths=['x'],
-            not_paths_specs=[final_audio],
-            logscale=True,fontsize=16,set_width=1.5,
+            not_paths_specs=[temp_pcen_spec],color_mode='HSV',to_db=False,
+            logscale=True,fontsize=15,set_width=1.3,
             draw_boxes=[temp_unlog_boxes],
+            box_colors=['white']*len(merged_boxes),
+            box_widths=[2]*len(merged_boxes),
             box_format='xxyy')
         
         # make label txt file

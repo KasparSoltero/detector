@@ -20,7 +20,6 @@ def calculate_iou_ios(box1, box2, format):
                 y_top = max(box1[1], box2[1])
                 x_right = max(box1[2], box2[2])
                 y_bottom = min(box1[3], box2[3])
-                print(f'box1: {box1}, box2: {box2}, x_left: {x_left}, y_top: {y_top}, x_right: {x_right}, y_bottom: {y_bottom}')
 
             # Calculate intersection area
             if x_right < x_left or y_bottom < y_top:
@@ -34,7 +33,6 @@ def calculate_iou_ios(box1, box2, format):
             ios = intersection_area / min(box1_area, box2_area)
             # Calculate IoU
             iou = intersection_area / float(box1_area + box2_area - intersection_area)
-            print(f'intersection area: {intersection_area}, box1 area: {box1_area}, box2 area: {box2_area}, iou: {iou}, ios: {ios}')
             return iou, ios
 
 def combine_boxes(box1, box2):
@@ -186,9 +184,9 @@ def pcen(spec, s=0.025, alpha=0.01, delta=0, r=0.05, eps=1e-6):
     Parameters:
     - spec (Tensor): Input spectrogram.
     - s (float): Time constant.
-    - alpha (float): Exponent for the smooth function. [trained value: 0.6]
+    - alpha (float): Exponent for the smooth function.
     - delta (float): Bias term.
-    - r (float): Root compression parameter. [trained value: 0.2]
+    - r (float): Root compression parameter.
     - eps (float): Small value to prevent division by zero.
     
     Returns:

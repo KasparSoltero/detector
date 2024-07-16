@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, hsv_to_rgb
 # Adjust colorbar to match figure aspect ratio
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.io import wavfile
@@ -283,6 +283,7 @@ teal_color = '#00FFFF'
 
 def plot_spectrogram(paths,not_paths_specs=None,
                   color='dusk', 
+                  color_mode='normal',
                   crop_time=None,
                   crop_frequency=None,  
                   resample_rate=48000, 
@@ -298,6 +299,11 @@ def plot_spectrogram(paths,not_paths_specs=None,
                   normalise=True,
                   fontsize=None,
                   box_format='xyxy',
+                  box_colors=None,
+                  box_styles=None,
+                  box_widths=None,
+                  specify_freq_range=None,
+                  to_db=True
                   ):
     if fontsize:
         plt.rcParams.update({
@@ -353,6 +359,13 @@ def plot_spectrogram(paths,not_paths_specs=None,
     for i, file_path in enumerate(paths):
         if file_path=='x':
             spectrogram = not_paths_specs[i]
+            pre_crop_frequency_bins = spectrogram.shape[1]
+            if crop_time:
+                start, end = crop_time[i]
+                spectrogram = spectrogram[:, :, int(start):int(end)]
+            if crop_frequency:
+                start, end = crop_frequency[i]
+                spectrogram = spectrogram[:, int(start):int(end), :]
         else:
             # Read the audio file
             waveform, sample_rate = torchaudio.load(file_path)
@@ -365,13 +378,15 @@ def plot_spectrogram(paths,not_paths_specs=None,
             if base_waveform is None:
                 base_waveform = waveform
             spectrogram = spec_transform(waveform)
+            pre_crop_frequency_bins = spectrogram.shape[1]
 
-        spectrogram = 10 * torch.log10(spectrogram + 1e-10) # Convert to dB
+        if to_db:
+            spectrogram = 10 * torch.log10(spectrogram + 1e-10) # Convert to dB
         if normalise:
             spectrogram = (spectrogram - spectrogram.min()) / (spectrogram.max() - spectrogram.min()) # Normalize
 
+        _, original_height, original_width = spectrogram.shape
         if logscale:
-            _, original_height, original_width = spectrogram.shape
             log_scale = torch.logspace(0, 1, steps=original_height, base=10.0) - 1
             log_scale_indices = torch.clamp(log_scale * (original_height - 1) / (10 - 1), 0, original_height - 1).long()
             spectrogram = spectrogram[:, log_scale_indices, :]
@@ -380,11 +395,15 @@ def plot_spectrogram(paths,not_paths_specs=None,
         if spectrogram.shape[0]==2: # mono
             spectrogram = np.mean(spectrogram, axis=0)
 
+        if specify_freq_range:
+            min_freq, max_freq = specify_freq_range
+        else:
+            min_freq, max_freq = 0, resample_rate / 2
         times = np.linspace(0, spectrogram.shape[1] * hop_length / resample_rate, spectrogram.shape[1])
         if logscale:
-            frequencies = np.linspace(0, resample_rate / 2, original_height)[log_scale_indices]
+            frequencies = np.linspace(min_freq, max_freq, original_height)[log_scale_indices]
         else:
-            frequencies = np.linspace(0, resample_rate / 2, spectrogram.shape[0])
+            frequencies = np.linspace(min_freq, max_freq, spectrogram.shape[0])
 
         specs.append((spectrogram, times, frequencies))
 
@@ -403,39 +422,37 @@ def plot_spectrogram(paths,not_paths_specs=None,
         fig, ax = plt.subplots(figsize=(7.5, 4.5))
         spectrogram, times, frequencies = specs[0]
         aspect = set_width if (set_width=='auto') else (((times[-1]-times[0])/(frequencies[-1]-frequencies[0]))/set_width)
-        # cax = ax.imshow(spectrogram, aspect=aspect, origin='lower', extent=[times[0], times[-1], frequencies[0], frequencies[-1]], vmin=vmin, vmax=vmax, cmap=custom_color_maps[color[0]])
-        if logscale:
-            cax = ax.pcolormesh(times, frequencies, spectrogram, shading='auto', cmap=custom_color_maps[color[0]], vmin=vmin, vmax=vmax)
+        
+        if color_mode=='HSV':
+            # Convert spectrogram to HSV
+            value = (spectrogram - spectrogram.min()) / (spectrogram.max() - spectrogram.min())
+            saturation = 4 * value * (1 - value)
+            hue = np.linspace(1, 0, spectrogram.shape[0])[:, np.newaxis]  # Reversed from 1 to 0
+            hue = np.tile(hue, (1, spectrogram.shape[1]))
+            hsv_spec = np.stack([hue, saturation, value], axis=-1)
+            rgb_spec = hsv_to_rgb(hsv_spec)
+            rgb_spec = np.clip(rgb_spec, 0, 1)
+            
+            if logscale:
+                cax = ax.pcolormesh(times, frequencies, rgb_spec, shading='auto')
+            else:
+                cax = ax.imshow(rgb_spec, aspect=aspect, origin='lower', extent=[times[0], times[-1], frequencies[0], frequencies[-1]])
         else:
-            cax = ax.imshow(spectrogram, aspect=aspect, origin='lower', extent=[times[0], times[-1], frequencies[0], frequencies[-1]], vmin=vmin, vmax=vmax, cmap=custom_color_maps[color[0]])
+            if logscale:
+                cax = ax.pcolormesh(times, frequencies, spectrogram, shading='auto', cmap=custom_color_maps[color[0]], vmin=vmin, vmax=vmax)
+            else:
+                cax = ax.imshow(spectrogram, aspect=aspect, origin='lower', extent=[times[0], times[-1], frequencies[0], frequencies[-1]], vmin=vmin, vmax=vmax, cmap=custom_color_maps[color[0]])
 
         if vertical_line:
             ax.axvline(vertical_line[0], color='r')
         if draw_boxes:
-            for box in draw_boxes[0]:
+            for b, box in enumerate(draw_boxes[0]):
                 if box_format=='xxyy':
-                    # x1, x2, y1, y2 = box
-                    # x1 = x1/spectrogram.shape[1]
-                    # x2 = x2/spectrogram.shape[1]
-                    # y1 = y1/spectrogram.shape[0] * resample_rate/2
-                    # y2 = y2/spectrogram.shape[0] * resample_rate/2
-                    # print(f'to max freq: {y1}, {y2}')
-                    # y1 = np.searchsorted(frequencies, y1)
-                    # y2 = np.searchsorted(frequencies, y2)
-                    # print(f'searched: {y1}, {y2}')
-                    # y1 = y1/spectrogram.shape[0]
-                    # y2 = y2/spectrogram.shape[0]
-                    # print(spectrogram.shape)
                     x1, x2, y1, y2 = box
                     x1 = x1 / spectrogram.shape[1] * times[-1]
                     x2 = x2 / spectrogram.shape[1] * times[-1]
-                    y1 = y1 / original_height * resample_rate / 2
-                    y2 = y2 / original_height * resample_rate / 2
-                    
-                    # y1 = np.interp(y1, frequencies, np.arange(len(frequencies)))
-                    # y2 = np.interp(y2, frequencies, np.arange(len(frequencies)))
-                    # y1 = y1 / len(frequencies)
-                    # y2 = y2 / len(frequencies)
+                    y1 = y1 / pre_crop_frequency_bins * resample_rate/2
+                    y2 = y2 / pre_crop_frequency_bins * resample_rate/2
                 else:
                     x1, y1, x2, y2 = box
                     x1 = x1 * times[-1]
@@ -446,35 +463,82 @@ def plot_spectrogram(paths,not_paths_specs=None,
                     else:
                         y1 = y1 * frequencies[-1]
                         y2 = y2 * frequencies[-1]
-                print(box) # xyxy normalized
-                print(x1, y1, x2, y2)
-                ax.add_patch(plt.Rectangle((x1, y1), x2-x1, y2-y1, fill=False, edgecolor=teal_color, lw=1, zorder=10,linestyle='--'))
+                if box_colors:
+                    box_color = box_colors[b]
+                else:
+                    box_color = teal_color
+                if box_styles:
+                    box_style = box_styles[b]
+                else:
+                    box_style = '--'
+                if box_widths:
+                    box_width = box_widths[b]
+                else:
+                    box_width = 1
+            
+                ax.add_patch(plt.Rectangle((x1, y1), x2-x1, y2-y1, fill=False, edgecolor=box_color, lw=box_width, zorder=10,linestyle=box_style))
         
         if logscale:
             ax.set_yscale('function', functions=(lambda x: np.interp(x, frequencies, np.arange(len(frequencies))),
                                                  lambda x: np.interp(x, np.arange(len(frequencies)), frequencies)))
             ax.set_ylim(20, resample_rate/2)
-            yticks = [0, 1000, 5000, 10000, 24000]
+            yticks = [0, 1000, 2000, 5000, 10000, 24000]
             ax.set_yticks(yticks)
-            # ax.set_yticklabels([f'{int(y)}' if y < 1000 else f'{int(y/1000)}k' for y in yticks])
             ax.set_yticklabels([f'{int(y)//1000}' for y in yticks])
+            ax.set_ylabel('Frequency (kHz)')
+        else:
+            ax.set_ylim(frequencies[0], frequencies[-1])
+            yticks = np.linspace(frequencies[0], frequencies[-1], 5)
+            ax.set_yticks(yticks)
+            ax.set_yticklabels([f'{y/1000:.1f}' for y in yticks])
+            ax.set_ylabel('Frequency (kHz)')
         
         ax.set_xlabel('Time (s)')
-        ax.set_ylabel('Frequency (kHz)')
 
         if set_width != 'auto':
             fig.set_size_inches(7.5 * set_width, 4.5)  # Adjust figure size based on set_width
     
-        cbar = fig.colorbar(cax, ax=ax, pad=0.01, aspect=10*set_width if set_width != 'auto' else 30)
-        new_ticks = [0, 0.5, 1]
-        cbar.set_ticks(new_ticks)
-        cbar.set_ticklabels([f"{tick:.1f}" for tick in new_ticks])
+        if color_mode == 'HSV':
+            # Create custom colorbar for HSV mode
+            gradient = np.linspace(1, 0, 256)
+            gradient = gradient[:, np.newaxis]  # Make it a 2D array
 
+            hsv_gradient = np.zeros((256, 1, 3))
+            hsv_gradient[:,:,0] = gradient
+            hsv_gradient[:,:,1] = 1  # Set saturation to 1
+            hsv_gradient[:,:,2] = 1  # Set value to 1
 
-        if normalise:
-            cbar.set_label('Intensity (normalised dB)')
+            rgb_gradient = hsv_to_rgb(hsv_gradient)
+
+            # Get the position and size of the main axes
+            pos = ax.get_position()
+
+            # Create colorbar axes with the same height as the main plot
+            cbar_ax = fig.add_axes([pos.x1 + 0.01, pos.y0, 0.025, pos.height])
+
+            # Use pcolormesh with correct dimensions
+            cbar_ax.pcolormesh(np.array([[0, 1]]), np.linspace(0, 1, 257), rgb_gradient, shading='auto')
+            cbar_ax.set_xticks([])
+            cbar_ax.set_yticks([0, 1])
+            cbar_ax.set_yticklabels(['0', '255'])
+            # cbar_ax.set_yticks([])
+
+            # Move ticks to the right side
+            cbar_ax.yaxis.tick_right()
+
+            # Add 'Hue' label to the right side of the colorbar
+            cbar_ax.yaxis.set_label_position("right")
+            cbar_ax.set_ylabel('Hue (full intensity)', rotation=90, labelpad=5, va='bottom')
         else:
-            cbar.set_label('Intensity (dB)')    
+            cbar = fig.colorbar(cax, ax=ax, pad=0.01, aspect=10*set_width if set_width != 'auto' else 30)
+            new_ticks = [0, 1]
+            cbar.set_ticks(new_ticks)
+            cbar.set_ticklabels([f"{tick}" for tick in new_ticks])
+
+            if normalise:
+                cbar.set_label('Intensity (normalised dB)', labelpad=5)
+            else:
+                cbar.set_label('Intensity (dB)', labelpad=5)    
 
     elif len(specs)==2:
         fig = plt.figure(figsize=(7.5, 4.5))
