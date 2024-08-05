@@ -6,6 +6,165 @@ from ultralytics import YOLO
 from matplotlib.colors import hsv_to_rgb
 import random
 import os
+import matplotlib.pyplot as plt
+
+def load_and_process_audio(file_path, images_per_file, chunk_length, overlap, resample_rate):
+    spectrograms = load_spectrogram(file_path, max=images_per_file, chunk_length=chunk_length, overlap=overlap, resample_rate=resample_rate, unit_type='power')
+    if spectrograms is None:
+        return None
+    
+    images = []
+    for spec in spectrograms:
+        spec = spectrogram_transformed(spec, highpass_hz=50, lowpass_hz=16000)
+        spec = spectrogram_transformed(spec, set_db=-10)
+        images.append(spectrogram_transformed(spec, to_pil=True, log_scale=True, normalise='power_to_PCEN', resize=(640, 640)))
+    
+    return images
+
+def get_ground_truth_boxes(annotations, file_name, chunk_length):
+    gt_boxes = []
+    if annotations is not None:
+        file_annotations = annotations[annotations['filename'] == file_name]
+        for i in range(0, len(file_annotations), chunk_length):
+            specific_boxes = []
+            for _, row in file_annotations.iterrows():
+                if (row['start_time'] >= i and row['start_time'] <= i + chunk_length) or (row['end_time'] >= i and row['end_time'] <= i + chunk_length):
+                    x_start = max(0, (row['start_time'] - i) / chunk_length)
+                    x_end = min(1, (row['end_time'] - i) / chunk_length)
+                    y_end, y_start = map_frequency_to_log_scale(24000, [row['freq_min'], row['freq_max']])
+                    y_end = 1 - (y_end / 24000)
+                    y_start = 1 - (y_start / 24000)
+                    specific_boxes.append([x_start, y_start, x_end, y_end])
+            gt_boxes.append(specific_boxes)
+    return gt_boxes
+
+def predict_and_merge_boxes(model, images, conf_threshold):
+    results = model.predict(images, device='mps', save=False, show=False, verbose=False, conf=conf_threshold, iou=1)
+    boxes = [result.boxes.xyxyn.cpu().numpy() for result in results]
+    classes = [result.boxes.cls.cpu().numpy() for result in results]
+    
+    merged_boxes = []
+    merged_classes = []
+    for image_boxes, image_classes in zip(boxes, classes):
+        merged_image_boxes, merged_image_classes = merge_boxes_by_class(image_boxes, image_classes, iou_threshold=0.1, ios_threshold=0.4, format='xyxy')
+        merged_boxes.append(merged_image_boxes)
+        merged_classes.append(merged_image_classes)
+    
+    return merged_boxes, merged_classes
+
+def verify_detections(merged_boxes, merged_classes, gt_boxes):
+    verification_binaries = []
+    for image_boxes, image_classes, gt_box_set in zip(merged_boxes, merged_classes, gt_boxes):
+        image_verification_binaries = []
+        for box, cls in zip(image_boxes, image_classes):
+            x1, y1, x2, y2 = box[:4]
+            model_box = [x1, y1, x2, y2]
+            is_inside = any(is_box_center_inside(model_box, gt_box) for gt_box in gt_box_set)
+            image_verification_binaries.append(is_inside)
+        verification_binaries.append(image_verification_binaries)
+    return verification_binaries
+
+def plot_detections(images, gt_boxes, merged_boxes, merged_classes, verification_binaries, start_idx):
+    fig, axs = plt.subplots(2, 5, figsize=(25, 10))
+    for i, image in enumerate(images):
+        ax = axs[i // 5, i % 5]
+        
+        ax.imshow(np.array(image))
+        ax.set_xticks(np.linspace(0, 640, 6))
+        ax.set_xticklabels([f'{i:.1f}' for i in np.linspace(0, 10, 6)])
+        ax.set_yticks(np.linspace(0, 640, 13))
+        ax.set_yticklabels([f'{i:.0f}' for i in np.linspace(24, 0, 13)])
+
+        ax.set_title(f'{i}: {(start_idx+i)*10}s - {(start_idx+i+1)*10}s', fontsize=8)
+
+        # Plot ground truth boxes
+        for box in gt_boxes[i]:
+            x1, y1, x2, y2 = [coord * 640 for coord in box]
+            rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, facecolor='black', edgecolor='black', linewidth=1)
+            ax.add_patch(rect)
+
+        # Plot merged model prediction boxes
+        for j, (box, cls) in enumerate(zip(merged_boxes[i], merged_classes[i])):
+            x1, y1, x2, y2 = box[:4]
+            x1, y1, x2, y2 = [coord * 640 for coord in [x1, y1, x2, y2]]
+
+            if verification_binaries[i][j]:
+                color = 'red'
+                linewidth = 1
+            else:
+                color = 'white'
+                linewidth = 1
+
+            rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor=color, linewidth=linewidth, linestyle='--')
+            ax.add_patch(rect)
+            ax.text(x1, y2+0.1, f"{i}.{j}", color='white', fontsize=8)
+
+    # Remove any unused subplots
+    for i in range(len(images), 10):
+        fig.delaxes(axs.flatten()[i])
+
+    plt.tight_layout()
+    return fig
+
+def process_user_input(user_input, merged_boxes, merged_classes):
+    if user_input:
+        boxes_to_remove = list(map(int, user_input.split()))
+        for i in range(len(merged_boxes)):
+            merged_boxes[i] = [box for j, box in enumerate(merged_boxes[i]) if j not in boxes_to_remove]
+            merged_classes[i] = [cls for j, cls in enumerate(merged_classes[i]) if j not in boxes_to_remove]
+    return merged_boxes, merged_classes
+
+def print_detection_stats(file_idx, total_files, start_idx, end_idx, total_images, current_boxes, current_verification_binaries):
+    total_detections = sum(len(box) for box in current_boxes)
+    total_verified = sum(sum(binaries) for binaries in current_verification_binaries)
+    total_boxes = sum(len(binaries) for binaries in current_verification_binaries)
+    
+    if total_boxes > 0:
+        percent_inside_gt = (total_verified / total_boxes) * 100
+    else:
+        percent_inside_gt = 0
+
+    print(f"\nFile {file_idx + 1}/{total_files}: Images {start_idx + 1}-{end_idx} of {total_images}")
+    print(f"Total detections: {total_detections}")
+    print(f"Detections inside ground truth: {total_verified}/{total_boxes}")
+    print(f"Percent inside ground truth: {percent_inside_gt:.2f}%")
+    
+    # Calculate average detections per image
+    images_in_batch = end_idx - start_idx
+    avg_detections_per_image = total_detections / images_in_batch if images_in_batch > 0 else 0
+    print(f"Average detections per image: {avg_detections_per_image:.2f}")
+
+    # Print detection counts for each image
+    print("\nDetections per image:")
+    for i, boxes in enumerate(current_boxes):
+        print(f"  Image {start_idx + i + 1}: {len(boxes)} detections")
+
+    print("\n" + "="*50 + "\n")
+
+
+# box section checks
+def is_box_inside(box1, box2):
+    x1, y1, x2, y2 = box1
+    X1, Y1, X2, Y2 = box2
+    return (X1 <= x1 <= X2 and X1 <= x2 <= X2 and
+            Y1 <= y1 <= Y2 and Y1 <= y2 <= Y2)
+
+def is_box_center_inside(box1, box2):
+    x1, y1, x2, y2 = box1
+    X1, Y1, X2, Y2 = box2
+    x_center = (x1 + x2) / 2
+    y_center = (y1 + y2) / 2
+    return X1 <= x_center <= X2 and Y1 <= y_center <= Y2
+
+def convert_box_to_time_freq(box, image_duration=10, max_freq=24000):
+    x1, y1, x2, y2 = box
+    start_time = x1 * image_duration
+    end_time = x2 * image_duration
+    # Note: y-axis is inverted in the image
+    start_freq = (1 - y2) * max_freq
+    end_freq = (1 - y1) * max_freq
+    return start_time, end_time, start_freq, end_freq
+
 
 def calculate_iou_ios(box1, box2, format):
             # Coordinates of the intersection rectangle
@@ -14,33 +173,42 @@ def calculate_iou_ios(box1, box2, format):
                 y_top = max(box1[2], box2[2])
                 x_right = min(box1[1], box2[1])
                 y_bottom = min(box1[3], box2[3])
+                box1_area = (box1[1] - box1[0]) * (box1[3] - box1[2])
+                box2_area = (box2[1] - box2[0]) * (box2[3] - box2[2])
+                intersection_area = (x_right-x_left) * (y_bottom-y_top)
+                # No intersection
+                if x_right < x_left or y_bottom < y_top:
+                    return 0.0, 0
             elif format=='xyxy':
-                print('format right')
-                x_left = min(box1[0], box2[0])
-                y_top = max(box1[1], box2[1])
-                x_right = max(box1[2], box2[2])
-                y_bottom = min(box1[3], box2[3])
-
-            # Calculate intersection area
-            if x_right < x_left or y_bottom < y_top:
-                return 0.0, 0  # No intersection
-            intersection_area = (x_right - x_left) * (y_bottom - y_top)
-
-            # Area of both the bounding boxes
-            box1_area = (box1[1] - box1[0]) * (box1[3] - box1[2])
-            box2_area = (box2[1] - box2[0]) * (box2[3] - box2[2])
+                x_left = max(box1[0], box2[0])
+                y_bottom = max(box1[1], box2[1])
+                x_right = min(box1[2], box2[2])
+                y_top = min(box1[3], box2[3])
+                box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+                box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+                intersection_area = (x_right-x_left) * (y_top-y_bottom)
+                # No intersection
+                if x_right < x_left or y_top < y_bottom:
+                    return 0.0, 0
 
             ios = intersection_area / min(box1_area, box2_area)
             # Calculate IoU
             iou = intersection_area / float(box1_area + box2_area - intersection_area)
             return iou, ios
 
-def combine_boxes(box1, box2):
-    x_min = min(box1[0], box2[0])
-    x_max = max(box1[1], box2[1])
-    y_min = min(box1[2], box2[2])
-    y_max = max(box1[3], box2[3])
-    return [x_min, x_max, y_min, y_max]
+def combine_boxes(box1, box2, format='xxyy'):
+    if format=='xxyy':
+        x_min = min(box1[0], box2[0])
+        x_max = max(box1[1], box2[1])
+        y_min = min(box1[2], box2[2])
+        y_max = max(box1[3], box2[3])
+        return [x_min, x_max, y_min, y_max]
+    elif format=='xyxy':
+        x_min = min(box1[0], box2[0])
+        x_max = max(box1[2], box2[2])
+        y_min = min(box1[1], box2[1])
+        y_max = max(box1[3], box2[3])
+        return [x_min, y_min, x_max, y_max]
 
 def find(parent, i):
     if parent[i] == i:
@@ -82,7 +250,7 @@ def merge_boxes_by_class(boxes, classes, iou_threshold=0.5, ios_threshold=0.5, f
         if root not in merged_boxes:
             merged_boxes[root] = boxes[i]
         else:
-            merged_boxes[root] = combine_boxes(merged_boxes[root], boxes[i])
+            merged_boxes[root] = combine_boxes(merged_boxes[root], boxes[i], format)
     
     # Propagate the merge to ensure indirect overlaps are included
     updated = True
@@ -97,7 +265,7 @@ def merge_boxes_by_class(boxes, classes, iou_threshold=0.5, ios_threshold=0.5, f
                     continue
                 iou, ios = calculate_iou_ios(temp_merged_boxes[root1], temp_merged_boxes[root2], format)
                 if iou > iou_threshold or ios > ios_threshold:
-                    temp_merged_boxes[root1] = combine_boxes(temp_merged_boxes[root1], temp_merged_boxes[root2])
+                    temp_merged_boxes[root1] = combine_boxes(temp_merged_boxes[root1], temp_merged_boxes[root2], format)
                     del temp_merged_boxes[root2]
                     updated = True
                     break

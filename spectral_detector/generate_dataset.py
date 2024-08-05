@@ -488,6 +488,7 @@ def generate_overlays(
                             break
 
             # TODO maybe remove?: noises longer than final length are treated as continuous, no need for time edges
+            #TODO: tripple check iou ios merging calcualtions due to format change
             elif seg_time_bins >= bg_time_bins:
                 # Find frequency edges (vertical scan) - minimum start at 2 (~100 Hz @ 48khz) to avoid low frequency interferance
                 freq_start = freq_edge

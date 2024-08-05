@@ -7,13 +7,97 @@ import time
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
-from spectrogram_tools import load_spectrogram, spectrogram_transformed, map_frequency_to_log_scale, merge_boxes_by_class
+from spectrogram_tools import load_spectrogram, spectrogram_transformed, map_frequency_to_log_scale, is_box_center_inside, merge_boxes_by_class, plot_detections, get_ground_truth_boxes, predict_and_merge_boxes, verify_detections, print_detection_stats, process_user_input, load_and_process_audio
 import torchaudio, torch
 from intervaltree import IntervalTree
 
 max_time=60*60*60*2
 # max_time=60*20
 device = 'mps'
+
+def get_audio_files(directory, max_files=None):
+    all_audio_files = [file for file in os.listdir(directory) if file.endswith(('.wav', '.WAV', '.mp3', '.flac'))]
+    print(f'{len(all_audio_files)} total audio files in {directory}\n')
+
+    last_annotated_file = get_last_annotated_file()
+    start_index = get_start_index(all_audio_files, last_annotated_file)
+
+    audio_files = all_audio_files[start_index:]
+    if max_files and max_files < len(audio_files):
+        audio_files = audio_files[:max_files]
+        print(f'Processing {max_files} files of total {len(audio_files)} starting from {start_index}')
+    else:
+        print(f'Processing {len(audio_files)} files starting from {start_index}')
+
+    return audio_files
+
+def get_last_annotated_file():
+    if os.path.exists('new_manual_annotations.txt'):
+        with open('new_manual_annotations.txt', 'r') as f:
+            lines = f.readlines()
+            if lines:
+                last_annotated_file = lines[-1].split(',')[0].strip()
+                print(f'Last annotated file: {last_annotated_file} determined from {lines[-1]}')
+                return last_annotated_file
+    return None
+
+def get_start_index(all_audio_files, last_annotated_file):
+    if last_annotated_file:
+        try:
+            return all_audio_files.index(last_annotated_file)
+        except ValueError:
+            print(f"Warning: Last annotated file '{last_annotated_file}' not found in the directory. Starting from the beginning.")
+    return 0
+
+def manual_verification_workflow(directory='../data/testing/7050014', ground_truth='../data/testing/7050014/new_annotations.csv', images_per_file=None, max_files=None, conf_threshold=0.1, model_path=None):
+    model_path = model_path or 'runs/detect/train2602/weights/best.pt'
+    model = YOLO(model_path)
+    
+    audio_files = get_audio_files(directory, max_files)
+    annotations = pd.read_csv(ground_truth) if ground_truth else None
+    
+    for idx, file_name in enumerate(audio_files):
+        print(f'\n{idx}: {file_name}')
+        file_path = os.path.join(directory, file_name)
+        
+        images = load_and_process_audio(file_path, images_per_file, chunk_length=10, overlap=0, resample_rate=48000)
+        if images is None:
+            print(f'{idx}: Error - Unable to load spectrograms for {file_name}. Skipping...\nxxxxxxxx\nxxxxxxxx')
+            continue
+        
+        gt_boxes = get_ground_truth_boxes(annotations, file_name, chunk_length=10)
+        merged_boxes, merged_classes = predict_and_merge_boxes(model, images, conf_threshold)
+        verification_binaries = verify_detections(merged_boxes, merged_classes, gt_boxes)
+        
+        process_images_in_batches(images, gt_boxes, merged_boxes, merged_classes, verification_binaries, idx, len(audio_files))
+
+def process_images_in_batches(images, gt_boxes, merged_boxes, merged_classes, verification_binaries, file_idx, total_files):
+    for start_idx in range(0, len(images), 10):
+        end_idx = min(start_idx + 10, len(images))
+        current_images = images[start_idx:end_idx]
+        current_gt_boxes = gt_boxes[start_idx:end_idx]
+        current_boxes = merged_boxes[start_idx:end_idx]
+        current_classes = merged_classes[start_idx:end_idx]
+        current_verification_binaries = verification_binaries[start_idx:end_idx]
+        
+        print_detection_stats(file_idx, total_files, start_idx, end_idx, len(images), current_boxes, current_verification_binaries)
+        
+        fig = plot_detections(current_images, current_gt_boxes, current_boxes, current_classes, current_verification_binaries, start_idx)
+        plt.draw()
+        plt.pause(0.001)
+        fig.canvas.start_event_loop(0.001)
+        plt.close()
+        
+        user_input = input(f"Enter box numbers to remove (e.g., '1 3 5') or press Enter to keep all: ")
+        plt.close('all')
+        
+        current_boxes, current_classes = process_user_input(user_input, current_boxes, current_classes)
+        
+        # TODO: Save new annotations
+        
+        if end_idx == len(images):
+            break
+
 
 # def manual_verification_workflow(
 #     directory='../data/testing/7050014',
@@ -175,10 +259,12 @@ def manual_verification_workflow(
     ground_truth='../data/testing/7050014/new_annotations.csv',
     images_per_file=None,
     max_files=None,
-    model_no=2602,
-    conf_threshold=0.1
+    conf_threshold=0.1,
+    model_path=None
 ):
-    model_path = f'runs/detect/train{model_no}/weights/best.pt'
+    if model_path is None:
+        model_path = f'runs/detect/train2602/weights/best.pt'
+    
     model = YOLO(model_path)
     all_audio_files = [file for file in os.listdir(directory) if file.endswith(('.wav', '.WAV', '.mp3', '.flac'))]
     print(f'{len(all_audio_files)} total audio files in {directory}\n')
@@ -190,6 +276,7 @@ def manual_verification_workflow(
             lines = f.readlines()
             if lines:
                 last_annotated_file = lines[-1].split(',')[0].strip()
+                print(f'Last annotated file: {last_annotated_file} determined from {lines[-1]}')
 
     # Find the index of the last annotated file
     start_index = 0
@@ -198,13 +285,10 @@ def manual_verification_workflow(
             start_index = all_audio_files.index(last_annotated_file)
         except ValueError:
             print(f"Warning: Last annotated file '{last_annotated_file}' not found in the directory. Starting from the beginning.")
-
-    # Slice the audio_files list to start from the appropriate index
     audio_files = all_audio_files[start_index:]
-
     if max_files and max_files < len(audio_files):
         audio_files = audio_files[:max_files]
-        print(f'Processing {max_files} files starting from {start_index}')
+        print(f'Processing {max_files} files of total {len(audio_files)} starting from {start_index}')
     else:
         print(f'Processing {len(audio_files)} files starting from {start_index}')
 
@@ -217,13 +301,14 @@ def manual_verification_workflow(
 
         spectrograms = load_spectrogram(file_path, max=images_per_file, chunk_length=10, overlap=0, resample_rate=48000, unit_type='power')
         if spectrograms is None:
-            print(f'{idx}: Error - Unable to load spectrograms for {file_name}. Skipping...')
+            print(f'{idx}: Error - Unable to load spectrograms for {file_name}. Skipping...\nxxxxxxxx\nxxxxxxxx')
             continue
 
+        # convert spectrograms to images and load formatted gt boxes from annotations
         images = []
         gt_boxes = []
-
         for i, spec in enumerate(spectrograms):
+            # TODO update lowpass (and highpass?) to be data driven model-driven log, color, etc
             spec = spectrogram_transformed(spec, highpass_hz=50, lowpass_hz=16000)
             spec = spectrogram_transformed(spec, set_db=-10)
             images.append(spectrogram_transformed(spec, to_pil=True, log_scale=True, normalise='power_to_PCEN', resize=(640, 640)))
@@ -247,7 +332,7 @@ def manual_verification_workflow(
             show=False,
             verbose=False,
             conf=conf_threshold,
-            iou=0.5,
+            iou=1,
         )
         boxes = [result.boxes.xyxyn.cpu().numpy() for result in results]
         classes = [result.boxes.cls.cpu().numpy() for result in results]
@@ -255,14 +340,18 @@ def manual_verification_workflow(
         # Merge boxes for each image
         merged_boxes = []
         merged_classes = []
-        for image_boxes, image_classes in zip(boxes, classes):
-            print(image_boxes)
-            print(image_classes)
-            merged_image_boxes, merged_image_classes = merge_boxes_by_class(image_boxes, image_classes, iou_threshold=0.1, ios_threshold=0.4, format='xyxy')
-            print(merged_image_boxes)
+        for i, (image_boxes, image_classes) in enumerate(zip(boxes, classes)):
+            print(f'\nimage {i}:    {len(image_boxes)} detections\n')
+            merged_image_boxes, merged_image_classes = merge_boxes_by_class(
+                image_boxes, 
+                image_classes, 
+                iou_threshold=0.1,
+                ios_threshold=0.4,
+                format='xyxy')
             merged_boxes.append(merged_image_boxes)
             merged_classes.append(merged_image_classes)
 
+        # max 10 at a time for manual verification
         for start_idx in range(0, len(images), 10):
             end_idx = min(start_idx + 10, len(images))
             current_images = images[start_idx:end_idx]
@@ -270,7 +359,35 @@ def manual_verification_workflow(
             current_boxes = merged_boxes[start_idx:end_idx]
             current_classes = merged_classes[start_idx:end_idx]
 
-            print(f'\n{idx}/{len(audio_files)}: {start_idx+1}-{end_idx} of {len(images)} images')
+            # Check if model detections are outside ground truth boxes
+            current_verification_binaries = []
+            for i, (image_boxes, image_classes, gt_box_set) in enumerate(zip(current_boxes, current_classes, current_gt_boxes)):
+                this_image_verification_binaries = []
+                for j, (box, cls) in enumerate(zip(image_boxes, image_classes)):
+                    x1, y1, x2, y2 = box[:4]
+                    model_box = [x1, y1, x2, y2]
+
+                    is_inside = False
+                    for gt_box in gt_box_set:
+                        if is_box_center_inside(model_box, gt_box):
+                            is_inside = True
+                            this_image_verification_binaries.append(True)
+                            break
+                    if not is_inside:
+                        this_image_verification_binaries.append(False)
+
+                        abs_start_time = (start_idx + i) * 10 + x1 * 10
+                        abs_end_time = (start_idx + i) * 10 + x2 * 10
+                        # Map y-coordinates to log scale
+                        log_y1, log_y2 = map_frequency_to_log_scale(640, [int(y1 * 640), int(y2 * 640)])
+                        # Convert log-scaled coordinates to Hz
+                        start_freq = (1 - log_y2 / 640) * 24000
+                        end_freq = (1 - log_y1 / 640) * 24000
+                current_verification_binaries.append(this_image_verification_binaries)
+            # TODO then check if any GT boxes didnt get detected / do area comparison
+
+
+            print(f'\n{idx}/{len(audio_files)}: {start_idx+1}-{end_idx} of {len(images)} images. {sum([len(box) for box in current_boxes])} detections, percent inside GT: {sum([sum(binaries) for binaries in current_verification_binaries]) / sum([len(binaries) for binaries in current_verification_binaries]) * 100:.2f}%')
 
             fig, axs = plt.subplots(2, 5, figsize=(25, 10))
             for i, image in enumerate(current_images):
@@ -294,9 +411,17 @@ def manual_verification_workflow(
                 for j, (box, cls) in enumerate(zip(current_boxes[i], current_classes[i])):
                     x1, y1, x2, y2 = box[:4]
                     x1, y1, x2, y2 = [coord * 640 for coord in [x1, y1, x2, y2]]
-                    rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='white', linewidth=1, linestyle='--')
+
+                    if current_verification_binaries[i][j]:
+                        color = 'red'
+                        linewidth=1
+                    else:
+                        color = 'white'
+                        linewidth=1
+
+                    rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor=color, linewidth=linewidth, linestyle='--')
                     ax.add_patch(rect)
-                    ax.text(x1, y1, f"{j} ({cls})", color='white', fontsize=8, bbox=dict(facecolor='black', alpha=0.5))
+                    ax.text(x1, y2+0.1, f"{i}.{j}", color='white', fontsize=8)
 
             # Remove any unused subplots
             for i in range(len(current_images), 10):
@@ -312,52 +437,18 @@ def manual_verification_workflow(
             
             plt.close('all')
 
+            # TODO user input only if deteceted box outside GT box
             if user_input:
                 boxes_to_remove = list(map(int, user_input.split()))
                 for i in range(len(current_boxes)):
                     current_boxes[i] = [box for j, box in enumerate(current_boxes[i]) if j not in boxes_to_remove]
                     current_classes[i] = [cls for j, cls in enumerate(current_classes[i]) if j not in boxes_to_remove]
 
-            # Check if model detections are outside ground truth boxes
-            for i, (image_boxes, image_classes, gt_box_set) in enumerate(zip(current_boxes, current_classes, current_gt_boxes)):
-                for j, (box, cls) in enumerate(zip(image_boxes, image_classes)):
-                    x1, y1, x2, y2 = box[:4]
-                    model_box = [x1, y1, x2, y2]
-                    is_inside = False
-                    for gt_box in gt_box_set:
-                        if is_box_inside(model_box, gt_box):
-                            is_inside = True
-                            break
-                    if not is_inside:
-                        abs_start_time = (start_idx + i) * 10 + x1 * 10
-                        abs_end_time = (start_idx + i) * 10 + x2 * 10
-                        
-                        # Map y-coordinates to log scale
-                        log_y1, log_y2 = map_frequency_to_log_scale(640, [int(y1 * 640), int(y2 * 640)])
-                        
-                        # Convert log-scaled coordinates to Hz
-                        start_freq = (1 - log_y2 / 640) * 24000
-                        end_freq = (1 - log_y1 / 640) * 24000
-                        
-                        save_new_annotation(file_name, j, abs_start_time, abs_end_time, start_freq, end_freq, cls)
+            # TODO move abs calcs down here
+            # save_new_annotation(file_name, j, abs_start_time, abs_end_time, start_freq, end_freq, cls)
 
             if end_idx == len(images):
                 break
-
-def is_box_inside(box1, box2):
-    x1, y1, x2, y2 = box1
-    X1, Y1, X2, Y2 = box2
-    return (X1 <= x1 <= X2 and X1 <= x2 <= X2 and
-            Y1 <= y1 <= Y2 and Y1 <= y2 <= Y2)
-
-def convert_box_to_time_freq(box, image_duration=10, max_freq=24000):
-    x1, y1, x2, y2 = box
-    start_time = x1 * image_duration
-    end_time = x2 * image_duration
-    # Note: y-axis is inverted in the image
-    start_freq = (1 - y2) * max_freq
-    end_freq = (1 - y1) * max_freq
-    return start_time, end_time, start_freq, end_freq
 
 # def parse_user_input(user_input, file_name, start_idx):
 #     annotations = user_input.split(',')
@@ -443,9 +534,11 @@ def interpret_files_in_directory(
         print(f'weights files: {weights_files}')
         for model_weights in weights_files:
             for conf in confs:
+                ## init
                 timer = 0
                 model = YOLO(f'{model_dir}runs/detect/train{model_no}/weights/{model_weights}')
                 
+                # initialise audio and 'ground truth' annotations
                 annotations = None
                 if ground_truth:
                     annotations = pd.read_csv(ground_truth)
@@ -455,6 +548,7 @@ def interpret_files_in_directory(
                     print(f'processing first {max_files} files')
                 else: audio_files = all_audio_files
                 
+                # initialise results metrics
                 per_file_metrics = {
                     'percent_centers':np.zeros(len(audio_files)),
                     'number_gt_boxes':np.zeros(len(audio_files)),
@@ -467,13 +561,14 @@ def interpret_files_in_directory(
                     per_file_metrics[f'percent_time_intersection_pad_{padding}'] = np.zeros(len(audio_files))
                     per_file_metrics[f'percent_time_fp_pad_{padding}'] = np.zeros(len(audio_files))
                 
+                ## main loop
                 for idx, file_name in enumerate(audio_files):
                     print(f'\n{idx}:    {file_name}')
                     if annotations is not None:
                         file_annotations = annotations['filename'] == file_name
                         this_annotations = annotations[file_annotations]
-                        gt_boxes = []
                         print(f'{idx}:    {len(this_annotations)} ground truth boxes')
+                        gt_boxes = []
 
                     file_path = os.path.join(directory, file_name)
                     
@@ -481,48 +576,33 @@ def interpret_files_in_directory(
                     if spectrograms==None:
                         print(f'{idx}:error Unable to load spectrograms for {file_name}. Skipping...')
                         continue
-                    # send spectrograms to device
-
-                    # convert back to waveform and save to wav for viewing testing
-                    # waveform_transform = torchaudio.transforms.GriffinLim(
-                    #     n_fft=2048, 
-                    #     win_length=2048, 
-                    #     hop_length=512, 
-                    #     power=2.0
-                    # )
-                    # if energy_type=='dB':
-                    #     normalise = 'dB_to_power'
-                    # elif energy_type=='power':
-                    #     normalise = None
-                    # spec_audio = spectrogram_transformed(spec, normalise=normalise, to_torch=True)
-                    # if energy_type=='complex':
-
-                    # save first spectrogram as audio
-                    # spec_audio = torch.square(torch.abs(spectrograms[0]))
-                    # waveform = waveform_transform(spec_audio)
-                    # rms = torch.sqrt(torch.mean(torch.square(waveform)))
-                    # waveform = waveform*0.01/rms
-                    # torchaudio.save(f"tempx.wav", waveform, sample_rate=48000)
-
+                    #TODO send spectrograms to device
                     # spectrograms = [spec.to(device) for spec in spectrograms]
+                    # TODO remove timer condition
                     timer += len(spectrograms)
                     if timer*10 > max_time:
                         print(f'Done. Processed {max_time} seconds of audio')
                         break
                     final_time = len(spectrograms)*5 + 5
+
                     print(f'{idx}:    converting to {len(spectrograms)} images, total time so far {timer*10}s')
+
                     images = []
                     for i, spec in enumerate(spectrograms):
+                        # TODO update lowpass (and highpass?) to be data driven
                         spec = spectrogram_transformed(spec,
                                 highpass_hz=50,
                                 lowpass_hz=16000)
                         spec = spectrogram_transformed(spec,
                                 set_db=-10)
+                        # TODO update log, color mode etc to be model-training-specific data driven
                         images.append(spectrogram_transformed(spec, 
                                 to_pil=True, 
                                 log_scale=True, 
                                 normalise='power_to_PCEN', 
                                 resize=(640, 640)))
+                        
+                        # load boxes for this image. one annotation can become multiple boxes because of overlap
                         specific_boxes = []
                         if annotations is not None:
                             for _, row in this_annotations.iterrows():
@@ -545,24 +625,25 @@ def interpret_files_in_directory(
                                     x_end = (row['end_time'] - (i*5)) / 10
                                     specific_boxes.append([x_start, y_start, x_end, y_end])
                             gt_boxes.append(specific_boxes)
+
                     if annotations is not None:
                         print(f'{idx}:    total {sum([len(box) for box in gt_boxes])} ground truth boxes in selected images')
 
+                    # run detector model
                     results = model.predict(images, 
                         device='mps',
                         save=False, 
                         show=False,
                         verbose=False,
                         conf=conf,
-                        # line_width=3, 
                         iou=0.5, # lower value for more detections
+                        # line_width=3, 
                         # visualize=False,
                     )
                     boxes = [box.xyxyn for box in (result.boxes for result in results)]
                     classes = [box.cls for box in (result.boxes for result in results)]
                     n_detections = [len(box) for box in boxes]
                     print(f'{idx}:    {sum(n_detections)} detections')
-
 
                     #TODO allow older models to be used with metrics, fix log scaling etc
                     def add_padding(interval, padding):
@@ -587,14 +668,17 @@ def interpret_files_in_directory(
                         fp_duration = total_auto_duration - intersection_duration
                         return intersection_duration, fp_duration, total_auto_duration
                     
+                    # calculate metrics/results
                     if (annotations is not None) and to_csv:
                         found_in_center, not_found_in_center = 0, 0
                         gt_intervals = IntervalTree()
                         auto_intervals = IntervalTree()
 
+                        # for each annotation box, check if any of the model box's centers are within the annotation box
                         for _, row in this_annotations.iterrows():
                             start_time, end_time, start_freq, end_freq = row['start_time'], row['end_time'], row['freq_min'], row ['freq_max']
                             if (start_time > final_time) or ((end_time-start_time) < 0.1):
+                                print(f'{idx}:    skipping annotation {start_time}-{end_time} seconds')
                                 continue
                             if end_time > final_time:
                                 end_time = final_time
@@ -612,28 +696,26 @@ def interpret_files_in_directory(
                                         break
                                 if center_found:
                                     break
-
                             if not center_found:
                                 not_found_in_center += 1
-
                         number_gt_intervals = len(gt_intervals)
+
+                        # store percentage of centers found in annotations
+                        center_percentage = 100* found_in_center / (found_in_center + not_found_in_center) if found_in_center + not_found_in_center > 0 else 0
+                        per_file_metrics['percent_centers'][idx]=center_percentage
+                        per_file_metrics['number_gt_boxes'][idx] = number_gt_intervals
+                        
                         # Merge ground truth intervals
                         gt_intervals.merge_overlaps()
                         gt_duration = sum((interval.end - interval.begin) for interval in gt_intervals)
-
-                        # Create automatic intervals
+                        # Create detection/prediction intervals
                         for i, box_set in enumerate(boxes):
                             for box in box_set:
                                 start = i*5 + box[0]*10
                                 end = i*5 + box[2]*10
                                 auto_intervals.addi(start, end)
-
-                        # Merge automatic intervals
                         auto_intervals.merge_overlaps()
 
-                        center_percentage = 100* found_in_center / (found_in_center + not_found_in_center) if found_in_center + not_found_in_center > 0 else 0
-                        per_file_metrics['percent_centers'][idx]=center_percentage
-                        per_file_metrics['number_gt_boxes'][idx] = number_gt_intervals
                         per_file_metrics['final_time'][idx] = final_time
                         per_file_metrics['gt_time'][idx] = gt_duration
                         
@@ -658,16 +740,19 @@ def interpret_files_in_directory(
 
                         for fig_num in range(num_figures):
                             fig, axs = plt.subplots(3, 3, figsize=(9, 9))
+
                             for i in range(9):
                                 global_index = fig_num * 9 + i
                                 if global_index >= num_images:
                                     break
                                 image = images[global_index]
                                 ax = axs[i // 3, i % 3]
+
                                 ax.imshow(np.array(image))
                                 ax.axis('off')
                                 ax.title.set_text(f'seconds {global_index*5} to {(global_index+2)*5}')
                                 ax.title.set_fontsize(8)
+                                
                                 box_set = boxes[global_index].to('cpu')
                                 species = classes[global_index].to('cpu')
                                 
