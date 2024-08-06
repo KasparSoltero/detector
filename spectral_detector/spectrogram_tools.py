@@ -25,7 +25,7 @@ def get_ground_truth_boxes(annotations, file_name, chunk_length):
     gt_boxes = []
     if annotations is not None:
         file_annotations = annotations[annotations['filename'] == file_name]
-        for i in range(0, len(file_annotations), chunk_length):
+        for i in range(0, 60*10, chunk_length):
             specific_boxes = []
             for _, row in file_annotations.iterrows():
                 if (row['start_time'] >= i and row['start_time'] <= i + chunk_length) or (row['end_time'] >= i and row['end_time'] <= i + chunk_length):
@@ -54,15 +54,31 @@ def predict_and_merge_boxes(model, images, conf_threshold):
 
 def verify_detections(merged_boxes, merged_classes, gt_boxes):
     verification_binaries = []
+    tp_total, fp_total, fn_total = 0, 0, 0
     for image_boxes, image_classes, gt_box_set in zip(merged_boxes, merged_classes, gt_boxes):
         image_verification_binaries = []
+        tp, fp, fn = 0, 0, 0
+        detected_gt = set()
         for box, cls in zip(image_boxes, image_classes):
             x1, y1, x2, y2 = box[:4]
             model_box = [x1, y1, x2, y2]
-            is_inside = any(is_box_center_inside(model_box, gt_box) for gt_box in gt_box_set)
+            is_inside = False
+            for i, gt_box in enumerate(gt_box_set):
+                if is_box_center_inside(model_box, gt_box):
+                    is_inside = True
+                    if i not in detected_gt:
+                        tp += 1
+                        detected_gt.add(i)
+                    break
+            if not is_inside:
+                fp += 1
             image_verification_binaries.append(is_inside)
+        fn = len(gt_box_set) - len(detected_gt)
         verification_binaries.append(image_verification_binaries)
-    return verification_binaries
+        tp_total += tp
+        fp_total += fp
+        fn_total += fn
+    return verification_binaries, tp_total, fp_total, fn_total
 
 def plot_detections(images, gt_boxes, merged_boxes, merged_classes, verification_binaries, start_idx):
     fig, axs = plt.subplots(2, 5, figsize=(25, 10))
@@ -114,33 +130,38 @@ def process_user_input(user_input, merged_boxes, merged_classes):
             merged_classes[i] = [cls for j, cls in enumerate(merged_classes[i]) if j not in boxes_to_remove]
     return merged_boxes, merged_classes
 
-def print_detection_stats(file_idx, total_files, start_idx, end_idx, total_images, current_boxes, current_verification_binaries):
+def print_detection_stats(tp, fp, fn):
+    if tp + fp > 0:
+        precision = tp / (tp + fp)
+    else:
+        precision = 0
+    if tp + fn > 0:
+        recall = tp / (tp + fn)
+    else:
+        recall = 0
+    if precision + recall > 0:
+        f1_score = 2 * (precision * recall) / (precision + recall)
+    else:
+        f1_score = 0
+    print(f'TP: {tp}, FP: {fp}, FN: {fn}, Precision: {precision:.2f}, Recall: {recall:.2f}, F1 Score: {f1_score:.2f}')
+    
+def print_these_detection_stats(file_idx, total_files, start_idx, end_idx, total_images, current_boxes, current_verification_binaries, current_gt_boxes):
     total_detections = sum(len(box) for box in current_boxes)
     total_verified = sum(sum(binaries) for binaries in current_verification_binaries)
-    total_boxes = sum(len(binaries) for binaries in current_verification_binaries)
-    
-    if total_boxes > 0:
-        percent_inside_gt = (total_verified / total_boxes) * 100
-    else:
-        percent_inside_gt = 0
 
-    print(f"\nFile {file_idx + 1}/{total_files}: Images {start_idx + 1}-{end_idx} of {total_images}")
-    print(f"Total detections: {total_detections}")
-    print(f"Detections inside ground truth: {total_verified}/{total_boxes}")
-    print(f"Percent inside ground truth: {percent_inside_gt:.2f}%")
+    print(f"\nFile {file_idx + 1}/{total_files}: Images {start_idx + 1}-{end_idx} of {total_images}. ")
     
-    # Calculate average detections per image
-    images_in_batch = end_idx - start_idx
-    avg_detections_per_image = total_detections / images_in_batch if images_in_batch > 0 else 0
-    print(f"Average detections per image: {avg_detections_per_image:.2f}")
-
     # Print detection counts for each image
-    print("\nDetections per image:")
-    for i, boxes in enumerate(current_boxes):
-        print(f"  Image {start_idx + i + 1}: {len(boxes)} detections")
-
+    if total_detections > 0:
+        print(f"{total_detections} detections {100*total_verified/total_detections:.2f}% in {sum(len(_) for _ in current_gt_boxes)}", end='')
+    else:
+        print("No detections")
+    for i, boxes in enumerate(current_boxes): # 5 by 2 detection number grid
+        if i % 5 == 0:
+            print()  # Start a new line after every 5 numbers
+        print(f"{len(boxes):2d}", end=" ")
+    print()
     print("\n" + "="*50 + "\n")
-
 
 # box section checks
 def is_box_inside(box1, box2):
