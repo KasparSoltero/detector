@@ -7,7 +7,7 @@ import time
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
-from spectrogram_tools import load_spectrogram, spectrogram_transformed, map_frequency_to_log_scale, is_box_center_inside, merge_boxes_by_class, plot_detections, get_ground_truth_boxes, predict_and_merge_boxes, verify_detections, print_detection_stats, print_these_detection_stats, process_user_input, load_and_process_audio
+from spectrogram_tools import load_spectrogram, spectrogram_transformed, map_frequency_to_log_scale, is_box_center_inside, merge_boxes_by_class, plot_detections, get_ground_truth_boxes, predict_and_merge_boxes, calculate_detection_stats, get_verification_binaries, print_detection_stats, print_these_detection_stats, process_user_input, load_and_process_audio
 import torchaudio, torch
 from intervaltree import IntervalTree
 
@@ -15,6 +15,7 @@ max_time=60*60*60*2
 # max_time=60*20
 device = 'mps'
 
+# load all audio files from the last annotated file in new_manual_annotations.txt
 def get_audio_files(directory, max_files=None):
     all_audio_files = [file for file in os.listdir(directory) if file.endswith(('.wav', '.WAV', '.mp3', '.flac'))]
     print(f'{len(all_audio_files)} total audio files in {directory}\n')
@@ -49,7 +50,15 @@ def get_start_index(all_audio_files, last_annotated_file):
             print(f"Warning: Last annotated file '{last_annotated_file}' not found in the directory. Starting from the beginning.")
     return 0
 
-def manual_verification_workflow(directory='../data/testing/7050014', ground_truth='../data/testing/7050014/new_annotations.csv', images_per_file=None, max_files=None, conf_threshold=0.1, model_path=None):
+# main manual verification workflow functions
+def manual_verification_workflow(
+        directory='../data/testing/7050014', 
+        ground_truth='../data/testing/7050014/new_annotations.csv', 
+        images_per_file=None, 
+        max_files=None, 
+        conf_threshold=0.1, 
+        model_path=None
+    ):
     model_path = model_path or 'runs/detect/train2602/weights/best.pt'
     model = YOLO(model_path)
     
@@ -67,12 +76,15 @@ def manual_verification_workflow(directory='../data/testing/7050014', ground_tru
         
         gt_boxes = get_ground_truth_boxes(annotations, file_name, chunk_length=10)
         merged_boxes, merged_classes = predict_and_merge_boxes(model, images, conf_threshold)
-        verification_binaries, tp, fp, fn = verify_detections(merged_boxes, merged_classes, gt_boxes)
-        print_detection_stats(tp, fp, fn)
+        verification_binaries = get_verification_binaries(merged_boxes, gt_boxes)
 
-        process_images_in_batches(images, gt_boxes, merged_boxes, merged_classes, verification_binaries, idx, len(audio_files), tp, fp, fn)
+        updated_verification_binaries, total_num_saved = process_images_in_batches(images, gt_boxes, merged_boxes, merged_classes, verification_binaries, idx, file_name, len(audio_files))
 
-def process_images_in_batches(images, gt_boxes, merged_boxes, merged_classes, verification_binaries, file_idx, total_files, tp, fp, fn):
+        calculate_detection_stats(merged_boxes, merged_classes, updated_verification_binaries, gt_boxes, file_name, total_num_saved)
+
+def process_images_in_batches(images, gt_boxes, merged_boxes, merged_classes, verification_binaries, file_idx, file_name, total_files):
+    new_verification_binaries = verification_binaries.copy()
+    total_num_saved = 0
     for start_idx in range(0, len(images), 10):
         end_idx = min(start_idx + 10, len(images))
         current_images = images[start_idx:end_idx]
@@ -89,15 +101,18 @@ def process_images_in_batches(images, gt_boxes, merged_boxes, merged_classes, ve
         fig.canvas.start_event_loop(0.001)
         plt.close()
         
-        user_input = input(f"Enter box numbers to remove (e.g., '1 3 5') or press Enter to keep all: ")
-        plt.close('all')
+        # what should the user input?
+        # any white boxes should be added as new verified annoations by default.
+        # unless the user says not to. but I need to be able to play the audio of the annotation to check it.
         
-        current_boxes, current_classes = process_user_input(user_input, current_boxes, current_classes)
-        
-        # TODO: Save new annotations
+        current_verification_binaries_updated, num_saved = process_user_input(current_boxes, current_classes, current_verification_binaries, start_idx, file_name)
+        total_num_saved += num_saved
+        new_verification_binaries[start_idx:end_idx] = current_verification_binaries_updated
         
         if end_idx == len(images):
             break
+
+    return new_verification_binaries, total_num_saved
 
 def _manual_verification_workflow_old(
     directory='../data/testing/7050014',
@@ -231,7 +246,6 @@ def _manual_verification_workflow_old(
                 current_verification_binaries.append(this_image_verification_binaries)
             # TODO then check if any GT boxes didnt get detected / do area comparison
 
-
             print(f'\n{idx}/{len(audio_files)}: {start_idx+1}-{end_idx} of {len(images)} images. {sum([len(box) for box in current_boxes])} detections, percent inside GT: {sum([sum(binaries) for binaries in current_verification_binaries]) / sum([len(binaries) for binaries in current_verification_binaries]) * 100:.2f}%')
 
             fig, axs = plt.subplots(2, 5, figsize=(25, 10))
@@ -326,6 +340,7 @@ def save_new_annotation(filename, box_num, start_time, end_time, start_freq, end
     with open('new_manual_annotations.txt', 'a') as f:
         f.write(f"{filename}, {box_num}, {start_time:.2f}, {end_time:.2f}, {start_freq:.0f}, {end_freq:.0f}, {cls}\n")
 
+# main process audio loop
 def interpret_files_in_directory(
         directory='../data/testing/7050014', 
         model_dir='', 
